@@ -120,7 +120,7 @@ type fakeExplainer struct{ request ExplainRequest }
 
 func (f *fakeExplainer) Explain(_ context.Context, req ExplainRequest) (Explanation, error) {
 	f.request = req
-	return Explanation{Status: "generated", Model: "test-model", Title: "Dane wrażliwe", Summary: "Wykryto jan@example.pl", Factors: []string{"PESEL 44051401458"}, NextStep: "Usuń dane osobowe"}, nil
+	return Explanation{Status: "generated", Model: "test-model", Title: "Sensitive data", Summary: "Detected jan@example.pl", Factors: []string{"PESEL 44051401458"}, NextStep: "Remove the personal data"}, nil
 }
 
 func TestAIExplanationRedactsInputsAndOutputs(t *testing.T) {
@@ -299,16 +299,13 @@ func TestHotReloadThreatFeed(t *testing.T) {
 		t.Fatalf("hot-reloaded feed did not block: %s %v", after.Decision, after.Reasons)
 	}
 }
-func TestUnavailablePolishNERFailsConfigurationValidation(t *testing.T) {
+func TestRedactionModelSettingsAreValidated(t *testing.T) {
 	e, _ := testEngine(t, SemanticScores{})
-	snap, err := e.Config.Snapshot()
-	if err != nil {
-		t.Fatal(err)
-	}
+	snap, _ := e.Config.Snapshot()
 	p := snap.Policy
-	p.Redaction.UseModel = true
+	p.Redaction.OnModelFailure = "ignore"
 	if err := validatePolicy(p); err == nil {
-		t.Fatal("missing NER weights were silently accepted")
+		t.Fatal("invalid on_model_failure accepted")
 	}
 }
 func TestStrictnessModeChangesDecision(t *testing.T) {

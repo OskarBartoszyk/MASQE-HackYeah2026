@@ -85,9 +85,16 @@ type GhostPolicy struct {
 	AllowedActions []string `yaml:"allowed_actions" json:"allowed_actions"`
 }
 type RedactionPolicy struct {
-	Language  string `yaml:"language" json:"language"`
-	ModelPath string `yaml:"model_path" json:"model_path"`
-	UseModel  bool   `yaml:"use_model" json:"use_model"`
+	Language string `yaml:"language" json:"language"`
+	// UseModel adds the fine-tuned Polish HerBERT NER model (served by the AI
+	// Guard) on top of the deterministic detectors.
+	UseModel bool   `yaml:"use_model" json:"use_model"`
+	Model    string `yaml:"model" json:"model"`
+	// Labels the model may redact; empty = DefaultModelLabels.
+	Labels   []string `yaml:"labels" json:"labels"`
+	MinScore float64  `yaml:"min_score" json:"min_score"`
+	// OnModelFailure: rules (fall back, warn) or block (fail closed).
+	OnModelFailure string `yaml:"on_model_failure" json:"on_model_failure"`
 }
 type ClientPolicy struct {
 	UserID     string   `yaml:"user_id" json:"user_id"`
@@ -339,8 +346,11 @@ func validatePolicy(p Policy) error {
 	if p.Version == "" {
 		return fmt.Errorf("policy version is required")
 	}
-	if p.Redaction.UseModel {
-		return fmt.Errorf("redaction.use_model cannot be enabled: the supplied Polish NER checkpoint has no model weights")
+	if f := strings.ToLower(p.Redaction.OnModelFailure); f != "" && f != "rules" && f != "block" {
+		return fmt.Errorf("redaction.on_model_failure must be rules or block")
+	}
+	if !inUnit(p.Redaction.MinScore) {
+		return fmt.Errorf("redaction.min_score must be between 0 and 1")
 	}
 	if len(p.Strictness) > 0 {
 		if _, ok := p.Strictness[p.Mode]; !ok {

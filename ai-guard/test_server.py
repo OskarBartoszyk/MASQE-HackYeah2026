@@ -127,8 +127,8 @@ class AdversarialPromptTests(unittest.TestCase):
 class ExplanationTests(unittest.TestCase):
     def test_python_calls_local_ai_and_sanitizes_context(self):
         response = {"response": json.dumps({
-            "title": "Operacja zatrzymana", "summary": "Agent próbował wykonać działanie poza zadaniem.",
-            "factors": ["Polecenie chciało zmienić zasady."], "next_step": "Wróć do pierwotnego zadania.",
+            "title": "Action stopped", "summary": "The agent tried to act outside the task.",
+            "factors": ["The request tried to change the rules."], "next_step": "Return to the original task.",
         }, ensure_ascii=False)}
 
         class FakeResponse:
@@ -148,7 +148,7 @@ class ExplanationTests(unittest.TestCase):
         request_body = call.call_args.args[0].data.decode()
         self.assertNotIn("44051401458", request_body)
         self.assertNotIn("jan@example.pl", request_body)
-        self.assertIn("[UKRYTY_EMAIL]", request_body)
+        self.assertIn("[HIDDEN_EMAIL]", request_body)
 
     def test_model_failure_is_not_disguised_as_generated_explanation(self):
         with patch.object(explanation_module.urllib.request, "urlopen", side_effect=OSError("offline")):

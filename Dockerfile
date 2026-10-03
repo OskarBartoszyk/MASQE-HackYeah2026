@@ -1,7 +1,7 @@
 FROM node:22-bookworm-slim AS dashboard
 WORKDIR /src/dashboard
 COPY dashboard/package*.json ./
-RUN npm install
+RUN npm ci --no-audit --no-fund
 COPY dashboard/ ./
 RUN npm run build
 

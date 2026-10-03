@@ -32,6 +32,12 @@ type Store struct {
 	newSessions map[string][]time.Time
 	subsMu      sync.Mutex
 	subs        map[chan string]struct{}
+	// Tamper-evident audit chain (audit_chain.go).
+	readDB         *sql.DB
+	chainMu        sync.Mutex
+	chainHead      int64
+	chainKey       []byte
+	chainKeySource string
 }
 type BudgetScope struct {
 	Subject string
@@ -52,8 +58,10 @@ func OpenStore(path string) (*Store, error) {
 	s := &Store{db: db, sessions: map[string]*SessionState{}, principals: map[string][]stepRecord{}, newSessions: map[string][]time.Time{}, subs: map[chan string]struct{}{}}
 	db.SetMaxOpenConns(1)
 	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS audit_events (id TEXT PRIMARY KEY, timestamp TEXT, user_id TEXT, role TEXT, agent TEXT, action TEXT, resource TEXT, decision TEXT, reasons TEXT, policy_version TEXT, risk REAL, semantic TEXT, tokens INTEGER, cost_usd REAL, latency_ms REAL, session_id TEXT, gateway_ms REAL DEFAULT 0, deterministic_ms REAL DEFAULT 0, semantic_ms REAL DEFAULT 0, semantic_escalated INTEGER DEFAULT 0, execution_status TEXT DEFAULT 'VERDICT_ONLY', actual_tokens INTEGER DEFAULT 0, approved_by TEXT DEFAULT '', explanation TEXT DEFAULT '{}', model TEXT DEFAULT '', controls TEXT DEFAULT '[]', trace TEXT DEFAULT '[]')`,
+		`CREATE TABLE IF NOT EXISTS audit_events (id TEXT PRIMARY KEY, timestamp TEXT, user_id TEXT, role TEXT, agent TEXT, action TEXT, resource TEXT, decision TEXT, reasons TEXT, policy_version TEXT, risk REAL, semantic TEXT, tokens INTEGER, cost_usd REAL, latency_ms REAL, session_id TEXT, gateway_ms REAL DEFAULT 0, deterministic_ms REAL DEFAULT 0, semantic_ms REAL DEFAULT 0, semantic_escalated INTEGER DEFAULT 0, execution_status TEXT DEFAULT 'VERDICT_ONLY', actual_tokens INTEGER DEFAULT 0, approved_by TEXT DEFAULT '', explanation TEXT DEFAULT '{}', model TEXT DEFAULT '', controls TEXT DEFAULT '[]', trace TEXT DEFAULT '[]', pii_model_ms REAL DEFAULT 0)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_events(timestamp DESC)`,
+		`CREATE TABLE IF NOT EXISTS audit_chain (seq INTEGER PRIMARY KEY, record TEXT NOT NULL, kind TEXT NOT NULL, at TEXT NOT NULL, record_hash TEXT NOT NULL, prev_hash TEXT NOT NULL, hash TEXT NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_chain_record ON audit_chain(record, seq)`,
 		`CREATE TABLE IF NOT EXISTS usage_daily (day TEXT, subject TEXT, tokens INTEGER NOT NULL DEFAULT 0, cost_usd REAL NOT NULL DEFAULT 0, PRIMARY KEY(day,subject))`,
 		`CREATE TABLE IF NOT EXISTS request_window (subject TEXT, timestamp INTEGER)`,
 		`CREATE INDEX IF NOT EXISTS idx_window ON request_window(subject, timestamp)`,
@@ -81,15 +89,45 @@ func OpenStore(path string) (*Store, error) {
 		`ALTER TABLE audit_events ADD COLUMN model TEXT DEFAULT ''`,
 		`ALTER TABLE audit_events ADD COLUMN controls TEXT DEFAULT '[]'`,
 		`ALTER TABLE audit_events ADD COLUMN trace TEXT DEFAULT '[]'`,
+		`ALTER TABLE audit_events ADD COLUMN pii_model_ms REAL DEFAULT 0`,
 	} {
 		_, _ = db.Exec(migration)
 	}
 	_, _ = db.Exec(`INSERT OR IGNORE INTO demo_customers(id,name,email,status) VALUES('123','Anna Kowalska','anna@example.pl','active'),('456','Piotr Nowak','piotr@example.pl','active')`)
 	// Approvals live in memory; after a restart old pending rows can never run.
 	_, _ = db.Exec(`UPDATE approvals SET status='EXPIRED' WHERE status='PENDING'`)
+	if s.chainKey, s.chainKeySource, err = loadAuditKey(path); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("audit key: %w", err)
+	}
+	s.readDB = db
+	if path != ":memory:" && !strings.HasPrefix(path, "file:") {
+		escaped := strings.NewReplacer("%", "%25", "?", "%3f", "#", "%23").Replace(path)
+		if s.readDB, err = sql.Open("sqlite3", "file:"+escaped+"?mode=ro&_busy_timeout=5000"); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
+	if err := s.sealExisting(); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("audit chain: %w", err)
+	}
 	return s, nil
 }
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	if s.readDB != nil && s.readDB != s.db {
+		s.readDB.Close()
+	}
+	return s.db.Close()
+}
+
+// AuditChainHead is the newest sealed entry, for logs and exports.
+func (s *Store) AuditChainHead() (int64, string) {
+	var seq int64
+	var hash string
+	_ = s.db.QueryRow(`SELECT seq,hash FROM audit_chain ORDER BY seq DESC LIMIT 1`).Scan(&seq, &hash)
+	return seq, hash
+}
 
 // Subscribe receives the id of every audit event that is written or updated.
 // Slow subscribers miss notifications instead of blocking the gateway.
@@ -118,8 +156,10 @@ func (s *Store) publish(id string) {
 
 // SetIncidentState records the analyst workflow state of an incident.
 func (s *Store) SetIncidentState(id, status, note, by string) error {
-	_, err := s.db.Exec(`INSERT INTO incident_state(id,status,note,updated_by,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,note=excluded.note,updated_by=excluded.updated_by,updated_at=excluded.updated_at`, id, status, note, by, time.Now().UTC().Format(time.RFC3339))
-	return err
+	return s.writeSealed("incident:"+id, "incident", func(tx *sql.Tx) error {
+		_, err := tx.Exec(`INSERT INTO incident_state(id,status,note,updated_by,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,note=excluded.note,updated_by=excluded.updated_by,updated_at=excluded.updated_at`, id, status, note, by, time.Now().UTC().Format(time.RFC3339))
+		return err
+	})
 }
 
 func (s *Store) IncidentStates() (map[string][3]string, error) {
@@ -413,14 +453,20 @@ func (s *Store) AddAudit(e AuditEvent) error {
 	if e.ExecutionStatus == "" {
 		e.ExecutionStatus = "VERDICT_ONLY"
 	}
-	_, err := s.db.Exec(`INSERT INTO audit_events(id,timestamp,user_id,role,agent,action,resource,decision,reasons,policy_version,risk,semantic,tokens,cost_usd,latency_ms,session_id,gateway_ms,deterministic_ms,semantic_ms,semantic_escalated,explanation,execution_status,model,controls,trace) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, e.ID, e.Timestamp, e.User, e.Role, e.Agent, e.Action, e.Resource, string(e.Decision), string(r), e.PolicyVersion, e.Risk, string(sem), e.Tokens, e.CostUSD, e.LatencyMS, e.SessionID, e.GatewayMS, e.DeterministicMS, e.SemanticMS, e.SemanticEscalated, string(xai), e.ExecutionStatus, e.Model, string(ctl), string(trace))
+	err := s.writeSealed("event:"+e.ID, "decision", func(tx *sql.Tx) error {
+		_, err := tx.Exec(`INSERT INTO audit_events(id,timestamp,user_id,role,agent,action,resource,decision,reasons,policy_version,risk,semantic,tokens,cost_usd,latency_ms,session_id,gateway_ms,deterministic_ms,semantic_ms,semantic_escalated,explanation,execution_status,model,controls,trace,pii_model_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, e.ID, e.Timestamp, e.User, e.Role, e.Agent, e.Action, e.Resource, string(e.Decision), string(r), e.PolicyVersion, e.Risk, string(sem), e.Tokens, e.CostUSD, e.LatencyMS, e.SessionID, e.GatewayMS, e.DeterministicMS, e.SemanticMS, e.SemanticEscalated, string(xai), e.ExecutionStatus, e.Model, string(ctl), string(trace), e.PIIModelMS)
+		return err
+	})
 	if err == nil {
 		s.publish(e.ID)
 	}
 	return err
 }
 func (s *Store) UpdateExecution(id, status string, actualTokens int, approver string) error {
-	_, err := s.db.Exec(`UPDATE audit_events SET execution_status=?,actual_tokens=?,approved_by=? WHERE id=?`, status, actualTokens, approver, id)
+	err := s.writeSealed("event:"+id, "execution", func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE audit_events SET execution_status=?,actual_tokens=?,approved_by=? WHERE id=?`, status, actualTokens, approver, id)
+		return err
+	})
 	if err == nil {
 		s.publish(id)
 	}
@@ -430,30 +476,33 @@ func (s *Store) UpdateExecution(id, status string, actualTokens int, approver st
 // AnnotateAudit adds reasons and controls found after the verdict and can
 // re-label the stored decision (e.g. an attack captured inside Ghost Shell).
 func (s *Store) AnnotateAudit(id, decision string, reasons, controls []string) error {
-	var rawReasons, rawControls string
-	if err := s.db.QueryRow(`SELECT reasons,controls FROM audit_events WHERE id=?`, id).Scan(&rawReasons, &rawControls); err != nil {
-		return err
-	}
-	var rs, cs []string
-	_ = json.Unmarshal([]byte(rawReasons), &rs)
-	_ = json.Unmarshal([]byte(rawControls), &cs)
-	if len(reasons) > 0 {
-		kept := []string{}
-		for _, r := range rs {
-			if r != "policy checks passed" {
-				kept = append(kept, r)
-			}
+	err := s.writeSealed("event:"+id, "annotation", func(tx *sql.Tx) error {
+		var rawReasons, rawControls string
+		if err := tx.QueryRow(`SELECT reasons,controls FROM audit_events WHERE id=?`, id).Scan(&rawReasons, &rawControls); err != nil {
+			return err
 		}
-		rs = uniqueSorted(append(kept, reasons...))
-	}
-	rb, _ := json.Marshal(rs)
-	cb, _ := json.Marshal(uniqueSorted(append(cs, controls...)))
-	var err error
-	if decision != "" {
-		_, err = s.db.Exec(`UPDATE audit_events SET reasons=?,controls=?,decision=? WHERE id=?`, string(rb), string(cb), decision, id)
-	} else {
-		_, err = s.db.Exec(`UPDATE audit_events SET reasons=?,controls=? WHERE id=?`, string(rb), string(cb), id)
-	}
+		var rs, cs []string
+		_ = json.Unmarshal([]byte(rawReasons), &rs)
+		_ = json.Unmarshal([]byte(rawControls), &cs)
+		if len(reasons) > 0 {
+			kept := []string{}
+			for _, r := range rs {
+				if r != "policy checks passed" {
+					kept = append(kept, r)
+				}
+			}
+			rs = uniqueSorted(append(kept, reasons...))
+		}
+		rb, _ := json.Marshal(rs)
+		cb, _ := json.Marshal(uniqueSorted(append(cs, controls...)))
+		var err error
+		if decision != "" {
+			_, err = tx.Exec(`UPDATE audit_events SET reasons=?,controls=?,decision=? WHERE id=?`, string(rb), string(cb), decision, id)
+		} else {
+			_, err = tx.Exec(`UPDATE audit_events SET reasons=?,controls=? WHERE id=?`, string(rb), string(cb), id)
+		}
+		return err
+	})
 	if err == nil {
 		s.publish(id)
 	}
@@ -465,20 +514,25 @@ func (s *Store) AddControls(id string, extra []string) error {
 	if len(extra) == 0 {
 		return nil
 	}
-	var raw string
-	if err := s.db.QueryRow(`SELECT controls FROM audit_events WHERE id=?`, id).Scan(&raw); err != nil {
+	return s.writeSealed("event:"+id, "controls", func(tx *sql.Tx) error {
+		var raw string
+		if err := tx.QueryRow(`SELECT controls FROM audit_events WHERE id=?`, id).Scan(&raw); err != nil {
+			return err
+		}
+		var list []string
+		_ = json.Unmarshal([]byte(raw), &list)
+		b, _ := json.Marshal(uniqueSorted(append(list, extra...)))
+		_, err := tx.Exec(`UPDATE audit_events SET controls=? WHERE id=?`, string(b), id)
 		return err
-	}
-	var list []string
-	_ = json.Unmarshal([]byte(raw), &list)
-	b, _ := json.Marshal(uniqueSorted(append(list, extra...)))
-	_, err := s.db.Exec(`UPDATE audit_events SET controls=? WHERE id=?`, string(b), id)
-	return err
+	})
 }
 
 func (s *Store) UpdateExplanation(id string, ex Explanation) error {
 	b, _ := json.Marshal(ex)
-	_, err := s.db.Exec(`UPDATE audit_events SET explanation=? WHERE id=?`, string(b), id)
+	err := s.writeSealed("event:"+id, "explanation", func(tx *sql.Tx) error {
+		_, err := tx.Exec(`UPDATE audit_events SET explanation=? WHERE id=?`, string(b), id)
+		return err
+	})
 	if err == nil {
 		s.publish(id)
 	}
@@ -492,7 +546,7 @@ type AuditFilter struct {
 	Since    string
 }
 
-const auditColumns = `id,timestamp,user_id,role,agent,action,resource,decision,reasons,policy_version,risk,semantic,tokens,cost_usd,latency_ms,session_id,gateway_ms,deterministic_ms,semantic_ms,semantic_escalated,execution_status,actual_tokens,approved_by,explanation,model,controls,trace`
+const auditColumns = `id,timestamp,user_id,role,agent,action,resource,decision,reasons,policy_version,risk,semantic,tokens,cost_usd,latency_ms,session_id,gateway_ms,deterministic_ms,semantic_ms,semantic_escalated,execution_status,actual_tokens,approved_by,explanation,model,controls,trace,pii_model_ms`
 
 func (s *Store) Audits(f AuditFilter) ([]AuditEvent, error) {
 	if f.Limit <= 0 || f.Limit > 5000 {
@@ -534,7 +588,7 @@ type scanner interface{ Scan(...any) error }
 func scanAudit(row scanner) (AuditEvent, error) {
 	var e AuditEvent
 	var d, rs, sem, xai, ctl, trace string
-	if err := row.Scan(&e.ID, &e.Timestamp, &e.User, &e.Role, &e.Agent, &e.Action, &e.Resource, &d, &rs, &e.PolicyVersion, &e.Risk, &sem, &e.Tokens, &e.CostUSD, &e.LatencyMS, &e.SessionID, &e.GatewayMS, &e.DeterministicMS, &e.SemanticMS, &e.SemanticEscalated, &e.ExecutionStatus, &e.ActualTokens, &e.ApprovedBy, &xai, &e.Model, &ctl, &trace); err != nil {
+	if err := row.Scan(&e.ID, &e.Timestamp, &e.User, &e.Role, &e.Agent, &e.Action, &e.Resource, &d, &rs, &e.PolicyVersion, &e.Risk, &sem, &e.Tokens, &e.CostUSD, &e.LatencyMS, &e.SessionID, &e.GatewayMS, &e.DeterministicMS, &e.SemanticMS, &e.SemanticEscalated, &e.ExecutionStatus, &e.ActualTokens, &e.ApprovedBy, &xai, &e.Model, &ctl, &trace, &e.PIIModelMS); err != nil {
 		return e, err
 	}
 	e.Decision = Decision(d)

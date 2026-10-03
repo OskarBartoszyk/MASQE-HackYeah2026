@@ -11,6 +11,7 @@ type traceInput struct {
 	permission    string
 	resp          EvaluateResponse
 	resourceNotes []string
+	piiEngine     string
 	sessionReason string
 	steps         int
 	budget        BudgetResult
@@ -74,9 +75,9 @@ func buildTrace(in traceInput) []TraceStep {
 	if !sec.PII.Enabled {
 		add("personal data", "skip", "control disabled", nil, nil)
 	} else if in.pii {
-		add("personal data", "flag", fmt.Sprintf("detected · action %s · %d item(s) redacted", sec.PII.Action, in.redacted), nil, nil)
+		add("personal data", "flag", fmt.Sprintf("detected · action %s · %d item(s) redacted · %s", sec.PII.Action, in.redacted, in.piiEngine), nil, nil)
 	} else {
-		add("personal data", "pass", "none detected", nil, nil)
+		add("personal data", "pass", "none detected · "+in.piiEngine, nil, nil)
 	}
 	if !sec.Secrets.Enabled {
 		add("secrets", "skip", "control disabled", nil, nil)

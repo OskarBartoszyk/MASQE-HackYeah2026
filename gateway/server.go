@@ -42,6 +42,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/events/{id}", s.auth("audit.read_own", s.event))
 	mux.HandleFunc("GET /v1/audit/export.csv", s.auth("audit.export", s.auditCSV))
 	mux.HandleFunc("GET /v1/audit/export.json", s.auth("audit.export", s.auditJSON))
+	mux.HandleFunc("GET /v1/audit/verify", s.auth("audit.read_all", s.auditVerify))
 	mux.HandleFunc("GET /v1/telemetry", s.auth("telemetry.read", s.telemetry))
 	mux.HandleFunc("GET /v1/policy", s.auth("policy.read", s.policy))
 	mux.HandleFunc("GET /v1/me", s.auth("", s.me))
@@ -228,7 +229,28 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	if snap.Error != "" {
 		status = "degraded"
 	}
-	writeJSON(w, 200, map[string]any{"status": status, "policy_version": snap.Policy.Version, "config_hash": snap.Hash, "config_error": snap.Error, "semantic_degraded": s.Engine.SemanticDegraded(), "time": time.Now().UTC()})
+	writeJSON(w, 200, map[string]any{"status": status, "policy_version": snap.Policy.Version, "config_hash": snap.Hash, "config_error": snap.Error, "semantic_degraded": s.Engine.SemanticDegraded(), "pii_model": s.piiModelState(r.Context(), snap.Policy), "time": time.Now().UTC()})
+}
+
+func (s *Server) piiModelState(ctx context.Context, p Policy) string {
+	if !p.Redaction.UseModel || s.Engine.PII == nil {
+		return "disabled"
+	}
+	if reporter, ok := s.Engine.PII.(PIIStatusReporter); ok {
+		ctx, cancel := context.WithTimeout(ctx, time.Second)
+		defer cancel()
+		if state := reporter.ModelStatus(ctx); state != "enabled" {
+			return state
+		}
+	}
+	switch {
+	case s.Engine.PIIModelDegraded():
+		return "degraded"
+	case s.Engine.PIIModelNotInstalled():
+		return "not_installed"
+	default:
+		return "enabled"
+	}
 }
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	identity := identityFrom(r.Context())
@@ -351,11 +373,14 @@ func (s *Server) auditCSV(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", "attachment; filename=masqe-audit.csv")
+	if seq, hash := s.Engine.Store.AuditChainHead(); seq > 0 {
+		w.Header().Set("X-MASQE-Audit-Chain-Head", strconv.FormatInt(seq, 10)+":"+hash)
+	}
 	cw := csv.NewWriter(w)
-	_ = cw.Write([]string{"timestamp", "request_id", "session_id", "user", "role", "agent", "model", "action", "resource", "decision", "execution_status", "approved_by", "reasons", "controls", "policy", "risk", "prompt_injection", "data_exfiltration", "intent_alignment", "privilege_drift", "memory_poisoning", "semantic_escalated", "reserved_tokens", "actual_model_tokens", "cost_usd", "latency_ms", "gateway_ms", "deterministic_ms", "semantic_ms"})
+	_ = cw.Write([]string{"timestamp", "request_id", "session_id", "user", "role", "agent", "model", "action", "resource", "decision", "execution_status", "approved_by", "reasons", "controls", "policy", "risk", "prompt_injection", "data_exfiltration", "intent_alignment", "privilege_drift", "memory_poisoning", "semantic_escalated", "reserved_tokens", "actual_model_tokens", "cost_usd", "latency_ms", "gateway_ms", "deterministic_ms", "semantic_ms", "pii_model_ms"})
 	f3 := func(v float64) string { return strconv.FormatFloat(v, 'f', 3, 64) }
 	for _, e := range events {
-		row := []string{e.Timestamp, e.ID, e.SessionID, e.User, e.Role, e.Agent, e.Model, e.Action, e.Resource, string(e.Decision), e.ExecutionStatus, e.ApprovedBy, strings.Join(e.Reasons, "; "), strings.Join(e.Controls, "; "), e.PolicyVersion, f3(e.Risk), f3(e.Semantic.PromptInjection), f3(e.Semantic.DataExfiltration), f3(e.Semantic.IntentAlignment), f3(e.Semantic.PrivilegeDrift), f3(e.Semantic.MemoryPoisoning), strconv.FormatBool(e.SemanticEscalated), strconv.Itoa(e.Tokens), strconv.Itoa(e.ActualTokens), strconv.FormatFloat(e.CostUSD, 'f', 6, 64), f3(e.LatencyMS), f3(e.GatewayMS), f3(e.DeterministicMS), f3(e.SemanticMS)}
+		row := []string{e.Timestamp, e.ID, e.SessionID, e.User, e.Role, e.Agent, e.Model, e.Action, e.Resource, string(e.Decision), e.ExecutionStatus, e.ApprovedBy, strings.Join(e.Reasons, "; "), strings.Join(e.Controls, "; "), e.PolicyVersion, f3(e.Risk), f3(e.Semantic.PromptInjection), f3(e.Semantic.DataExfiltration), f3(e.Semantic.IntentAlignment), f3(e.Semantic.PrivilegeDrift), f3(e.Semantic.MemoryPoisoning), strconv.FormatBool(e.SemanticEscalated), strconv.Itoa(e.Tokens), strconv.Itoa(e.ActualTokens), strconv.FormatFloat(e.CostUSD, 'f', 6, 64), f3(e.LatencyMS), f3(e.GatewayMS), f3(e.DeterministicMS), f3(e.SemanticMS), f3(e.PIIModelMS)}
 		for i := range row {
 			row[i] = csvSafe(row[i])
 		}
@@ -370,8 +395,23 @@ func (s *Server) auditJSON(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, err.Error())
 		return
 	}
+	integrity, err := s.Engine.Store.VerifyAudit()
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
 	w.Header().Set("Content-Disposition", "attachment; filename=masqe-audit.json")
-	writeJSON(w, 200, map[string]any{"exported_at": time.Now().UTC(), "count": len(events), "events": events})
+	writeJSON(w, 200, map[string]any{"exported_at": time.Now().UTC(), "count": len(events), "events": events, "integrity": integrity})
+}
+
+// auditVerify recomputes the tamper-evident audit chain (audit_chain.go).
+func (s *Server) auditVerify(w http.ResponseWriter, r *http.Request) {
+	integrity, err := s.Engine.Store.VerifyAudit()
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, integrity)
 }
 
 func (s *Server) headers(next http.Handler) http.Handler {

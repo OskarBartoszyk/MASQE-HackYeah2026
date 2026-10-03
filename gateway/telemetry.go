@@ -60,9 +60,9 @@ func (s *Store) Telemetry(in TelemetryInput) (map[string]any, error) {
 	}
 	rows.Close()
 
-	var avg, gateway, deterministic, semantic, cost float64
+	var avg, gateway, deterministic, semantic, piiModel, cost float64
 	var tokens, escalations int
-	if err := s.db.QueryRow(`SELECT COALESCE(AVG(latency_ms),0),COALESCE(AVG(gateway_ms),0),COALESCE(AVG(deterministic_ms),0),COALESCE(AVG(CASE WHEN semantic_escalated=1 THEN semantic_ms END),0),COALESCE(SUM(tokens),0),COALESCE(SUM(cost_usd),0),COALESCE(SUM(semantic_escalated),0) FROM audit_events WHERE timestamp>=?`, from).Scan(&avg, &gateway, &deterministic, &semantic, &tokens, &cost, &escalations); err != nil {
+	if err := s.db.QueryRow(`SELECT COALESCE(AVG(latency_ms),0),COALESCE(AVG(gateway_ms),0),COALESCE(AVG(deterministic_ms),0),COALESCE(AVG(CASE WHEN semantic_escalated=1 THEN semantic_ms END),0),COALESCE(AVG(CASE WHEN pii_model_ms>0 THEN pii_model_ms END),0),COALESCE(SUM(tokens),0),COALESCE(SUM(cost_usd),0),COALESCE(SUM(semantic_escalated),0) FROM audit_events WHERE timestamp>=?`, from).Scan(&avg, &gateway, &deterministic, &semantic, &piiModel, &tokens, &cost, &escalations); err != nil {
 		return nil, err
 	}
 	latencies, gateways, err := s.recentLatencies(from, 5000)
@@ -104,7 +104,7 @@ func (s *Store) Telemetry(in TelemetryInput) (map[string]any, error) {
 	posture, components := securityPosture(in, unapprovedHighRisk+in.GhostIncidents24h)
 	return map[string]any{
 		"requests": total, "decisions": decisions,
-		"average_latency_ms": avg, "average_gateway_ms": gateway, "average_deterministic_ms": deterministic, "average_semantic_ms": semantic,
+		"average_latency_ms": avg, "average_gateway_ms": gateway, "average_deterministic_ms": deterministic, "average_semantic_ms": semantic, "average_pii_model_ms": piiModel,
 		"latency_ms":               map[string]float64{"p50": percentile(latencies, .50), "p95": percentile(latencies, .95), "p99": percentile(latencies, .99)},
 		"gateway_overhead_ms":      map[string]float64{"p50": percentile(gateways, .50), "p95": percentile(gateways, .95)},
 		"semantic_escalations":     escalations,
@@ -145,11 +145,11 @@ func securityPosture(in TelemetryInput, incidents int) (int, []PostureComponent)
 	}
 	incPoints := 15 - minInt(15, incidents*5)
 	components := []PostureComponent{
-		{"Aktywne kontrole", enabled * 40 / len(all), 40, itoa(enabled) + " of " + itoa(len(all)) + " guardrails enforcing"},
-		{"Tryb ochrony", modePoints, 20, "mode " + in.Policy.Mode},
-		{"Warstwa AI", semPoints, 15, semDetail},
-		{"Konfiguracja", cfgPoints, 10, cfgDetail},
-		{"Incydenty (24h)", incPoints, 15, itoa(incidents) + " incidents: confirmed exfiltration attempts or high-risk actions without approval"},
+		{"Enforcing controls", enabled * 40 / len(all), 40, itoa(enabled) + " of " + itoa(len(all)) + " guardrails enforcing"},
+		{"Strictness mode", modePoints, 20, "mode " + in.Policy.Mode},
+		{"AI layer", semPoints, 15, semDetail},
+		{"Configuration", cfgPoints, 10, cfgDetail},
+		{"Incidents (24h)", incPoints, 15, itoa(incidents) + " incidents: confirmed exfiltration attempts or high-risk actions without approval"},
 	}
 	score := 0
 	for _, c := range components {

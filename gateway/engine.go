@@ -16,11 +16,17 @@ type Engine struct {
 	Store     *Store
 	Semantic  SemanticAnalyzer
 	Explainer ExplanationGenerator
+	// PII is the optional HerBERT model used together with the rules.
+	PII PIIDetector
 
 	explainOnce     sync.Once
 	explainSlots    chan struct{}
 	explainWG       sync.WaitGroup
 	semanticFailure atomic.Int64
+	piiFailure      atomic.Int64
+	piiNotInstalled atomic.Int64
+	piiCacheOnce    sync.Once
+	piiCacheStore   *findingCache
 }
 
 // MaxConcurrentExplanations bounds the local LLM explainer so denied or
@@ -48,6 +54,12 @@ func (e *Engine) Evaluate(ctx context.Context, req EvaluateRequest) (EvaluateRes
 	for k, v := range req.Metadata {
 		req.Metadata[k] = Canonicalize(v)
 	}
+	// The PII model and the semantic guard are slow compared with the rules,
+	// so they run concurrently with the deterministic checks. Gateway overhead
+	// is reported without the time spent waiting for them.
+	var waited time.Duration
+	piiResult := make(chan piiScan, 1)
+	go func(text string) { piiResult <- e.scanPII(ctx, p, text) }(req.Prompt)
 	resp := EvaluateResponse{RequestID: req.RequestID, SessionID: req.SessionID, Decision: Allow, Reasons: []string{}, PolicyVersion: p.Version + "+" + snap.Hash, PolicyReloadedAt: snap.ReloadedAt.Format(time.RFC3339Nano)}
 	controls := map[string]bool{}
 	deny := func(control, reason string) {
@@ -142,6 +154,21 @@ func (e *Engine) Evaluate(ctx context.Context, req EvaluateRequest) (EvaluateRes
 	if session.Steps > req.Usage.ToolCalls {
 		req.Usage.ToolCalls = session.Steps
 	}
+	type semanticResult struct {
+		scores SemanticScores
+		err    error
+		ms     float64
+	}
+	escalate := shouldEscalateSemantic(req, action, session)
+	semResult := make(chan semanticResult, 1)
+	if escalate {
+		sreq := SemanticRequest{Prompt: req.Prompt, OriginalIntent: req.OriginalIntent, Action: req.Action, Resource: req.Resource, History: session.History}
+		go func() {
+			started := time.Now()
+			scores, err := e.Semantic.Analyze(ctx, sreq)
+			semResult <- semanticResult{scores, err, ms(time.Since(started))}
+		}()
+	}
 
 	// --- Budgets. Denied requests consume no tokens and only count against
 	// the caller's own rate limit, so nobody can drain a shared budget.
@@ -180,7 +207,18 @@ func (e *Engine) Evaluate(ctx context.Context, req EvaluateRequest) (EvaluateRes
 	}
 
 	// --- Deterministic content guards (input).
-	findings := ScanSensitive(req.Prompt)
+	piiWait := time.Now()
+	scan := <-piiResult
+	piiWaited := time.Since(piiWait)
+	waited += piiWaited
+	findings, piiWarning, piiErr := scan.Findings, scan.Warning, scan.Err
+	resp.Timings.PIIModelMS = scan.ModelMS
+	if piiWarning != "" {
+		resp.Warnings = append(resp.Warnings, piiWarning)
+	}
+	if piiErr != nil {
+		deny("pii", "personal-data model unavailable; blocked by redaction.on_model_failure")
+	}
 	var redactable []Finding
 	secret, pii := false, false
 	for _, f := range findings {
@@ -238,19 +276,19 @@ func (e *Engine) Evaluate(ctx context.Context, req EvaluateRequest) (EvaluateRes
 	if req.Action == "memory.write" {
 		memoryScore = memoryPoisonScore(req.Prompt)
 	}
-	resp.Timings.DeterministicMS = ms(time.Since(detStarted))
+	resp.Timings.DeterministicMS = ms(time.Since(detStarted) - piiWaited)
 
 	// --- Semantic guard.
-	history := session.History
 	scores := SemanticScores{IntentAlignment: 1, Signals: []string{"deterministic-fast-path"}}
-	if shouldEscalateSemantic(req, action, session) {
+	if escalate {
 		resp.SemanticEscalated = true
-		semStarted := time.Now()
-		var semErr error
-		scores, semErr = e.Semantic.Analyze(ctx, SemanticRequest{Prompt: req.Prompt, OriginalIntent: req.OriginalIntent, Action: req.Action, Resource: req.Resource, History: history})
-		resp.Timings.SemanticMS = ms(time.Since(semStarted))
-		if semErr != nil {
-			return EvaluateResponse{}, semErr
+		semWait := time.Now()
+		result := <-semResult
+		waited += time.Since(semWait)
+		scores = result.scores
+		resp.Timings.SemanticMS = result.ms
+		if result.err != nil {
+			return EvaluateResponse{}, result.err
 		}
 		if contains(scores.Signals, "semantic-service-unavailable") {
 			e.semanticFailure.Store(time.Now().Unix())
@@ -342,7 +380,7 @@ func (e *Engine) Evaluate(ctx context.Context, req EvaluateRequest) (EvaluateRes
 		}
 		resp.scopes = nil
 	}
-	resp.Trace = buildTrace(traceInput{req: req, policy: p, permission: permission, resp: resp, resourceNotes: resourceNotes, sessionReason: sessionReason, steps: session.Steps, budget: budget, secret: secret, pii: pii, redacted: len(redactable), threats: threatHits, signatures: len(snap.compiled), canaries: len(canaryHits), scores: scores, escalated: resp.SemanticEscalated, memoryWrite: req.Action == "memory.write"})
+	resp.Trace = buildTrace(traceInput{req: req, policy: p, permission: permission, resp: resp, piiEngine: scan.Engine, resourceNotes: resourceNotes, sessionReason: sessionReason, steps: session.Steps, budget: budget, secret: secret, pii: pii, redacted: len(redactable), threats: threatHits, signatures: len(snap.compiled), canaries: len(canaryHits), scores: scores, escalated: resp.SemanticEscalated, memoryWrite: req.Action == "memory.write"})
 	resp.Reasons = uniqueSorted(resp.Reasons)
 	if len(resp.Reasons) == 0 {
 		resp.Reasons = []string{"policy checks passed"}
@@ -351,7 +389,7 @@ func (e *Engine) Evaluate(ctx context.Context, req EvaluateRequest) (EvaluateRes
 		e.Store.RecordStep(session.Key, principal, req.Action+" "+RedactAll(req.Resource), sensitivity, p.Sessions)
 	}
 	resp.Timings.TotalMS = ms(time.Since(started))
-	resp.Timings.GatewayMS = maxFloatMS(0, resp.Timings.TotalMS-resp.Timings.SemanticMS)
+	resp.Timings.GatewayMS = maxFloatMS(0, resp.Timings.TotalMS-ms(waited))
 
 	explain := resp.Decision != Allow && resp.Decision != Throttle
 	switch {
@@ -370,7 +408,7 @@ func (e *Engine) Evaluate(ctx context.Context, req EvaluateRequest) (EvaluateRes
 	if resp.Decision == Block || resp.Decision == Throttle {
 		tokens = 0
 	}
-	event := AuditEvent{ID: req.RequestID, Timestamp: time.Now().UTC().Format(time.RFC3339Nano), User: req.User.ID, Role: req.User.Role, Agent: req.Agent.ID, Model: req.Agent.Model, Action: req.Action, Resource: RedactAll(req.Resource), Decision: resp.Decision, Reasons: resp.Reasons, Controls: sortedKeys(controls), PolicyVersion: resp.PolicyVersion, Risk: resp.Risk, Semantic: resp.Semantic, Tokens: tokens, CostUSD: req.Usage.CostUSD, LatencyMS: resp.Timings.TotalMS, GatewayMS: resp.Timings.GatewayMS, DeterministicMS: resp.Timings.DeterministicMS, SemanticMS: resp.Timings.SemanticMS, SemanticEscalated: resp.SemanticEscalated, SessionID: req.SessionID, ExecutionStatus: executionStatus, Explanation: resp.Explanation, Trace: resp.Trace}
+	event := AuditEvent{ID: req.RequestID, Timestamp: time.Now().UTC().Format(time.RFC3339Nano), User: req.User.ID, Role: req.User.Role, Agent: req.Agent.ID, Model: req.Agent.Model, Action: req.Action, Resource: RedactAll(req.Resource), Decision: resp.Decision, Reasons: resp.Reasons, Controls: sortedKeys(controls), PolicyVersion: resp.PolicyVersion, Risk: resp.Risk, Semantic: resp.Semantic, Tokens: tokens, CostUSD: req.Usage.CostUSD, LatencyMS: resp.Timings.TotalMS, GatewayMS: resp.Timings.GatewayMS, DeterministicMS: resp.Timings.DeterministicMS, SemanticMS: resp.Timings.SemanticMS, PIIModelMS: resp.Timings.PIIModelMS, SemanticEscalated: resp.SemanticEscalated, SessionID: req.SessionID, ExecutionStatus: executionStatus, Explanation: resp.Explanation, Trace: resp.Trace}
 	if resp.Decision == Block || resp.Decision == Throttle {
 		event.CostUSD = 0
 	}

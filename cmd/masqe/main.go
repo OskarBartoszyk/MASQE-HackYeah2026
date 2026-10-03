@@ -30,11 +30,17 @@ func main() {
 		log.Fatal(err)
 	}
 	defer store.Close()
+	// Log the chain head outside the database: an anchor for spotting a
+	// chain that was later rewritten or truncated.
+	if seq, hash := store.AuditChainHead(); seq > 0 {
+		log.Printf("audit chain head: entry %d %s", seq, hash)
+	}
 	semanticURL := env("MASQE_AI_GUARD_URL", "http://127.0.0.1:8090")
 	semanticTimeout, _ := strconv.Atoi(env("MASQE_SEMANTIC_TIMEOUT_MS", "1500"))
 	analyzer := gateway.ResilientAnalyzer{Primary: gateway.HTTPSemanticClient{URL: semanticURL, Client: &http.Client{Timeout: time.Duration(semanticTimeout) * time.Millisecond}}, Fallback: gateway.UnavailableAnalyzer{}}
 	engine := &gateway.Engine{Config: cfg, Store: store, Semantic: analyzer,
-		Explainer: gateway.HTTPExplanationClient{URL: semanticURL, Client: &http.Client{Timeout: 48 * time.Second}}}
+		Explainer: gateway.HTTPExplanationClient{URL: semanticURL, Client: &http.Client{Timeout: 48 * time.Second}},
+		PII:       gateway.HTTPNERClient{URL: semanticURL, Client: &http.Client{Timeout: 2 * time.Second}}}
 	server := gateway.NewServer(engine, dashboard)
 	// Loopback by default: the sample API keys are public. Docker sets
 	// MASQE_ADDR=0.0.0.0:8080 explicitly behind its own port mapping.

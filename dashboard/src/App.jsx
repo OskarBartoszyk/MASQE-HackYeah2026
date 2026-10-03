@@ -16,15 +16,15 @@ import { Playground } from './pages/Playground';
 import { useTrafficGenerator, juryProgress, JuryPanel } from './demo';
 
 const PAGES = {
-  operations: ['Centrum operacyjne', 'Decyzje bramy na żywo, incydenty i zasoby.'],
-  incidents: ['Incydenty', 'Potwierdzone ataki i dowody do obsługi przez zespół bezpieczeństwa.'],
-  events: ['Dziennik zdarzeń', 'Każda decyzja z pełnym śladem kontroli.'],
-  ghost: ['Ghost Shell', 'Izolowane środowisko dla niezaufanego kodu, z przynętami i nagraniem.'],
-  agents: ['Agenci i zasoby', 'Uprawnienia efektywne, budżety, koszty i wydajność.'],
-  policy: ['Polityka', 'Aktywna konfiguracja kontroli i threat feed.'],
-  playground: ['Plac testowy', 'Wyślij dowolne żądanie agenta i zobacz decyzję.'],
+  operations: ['Operations center', 'Live gateway decisions, incidents and resources.'],
+  incidents: ['Incidents', 'Confirmed attacks and evidence for the security team to handle.'],
+  events: ['Event log', 'Every decision with its full control trace.'],
+  ghost: ['Ghost Shell', 'Isolated workspace for untrusted code, with honeytokens and a recorder.'],
+  agents: ['Agents & resources', 'Effective permissions, budgets, costs and performance.'],
+  policy: ['Policy', 'Active control configuration and threat feed.'],
+  playground: ['Playground', 'Send any agent request and see the decision.'],
 };
-const NAV = [['operations', 'Operacje'], ['incidents', 'Incydenty'], ['events', 'Zdarzenia'], ['ghost', 'Ghost Shell'], ['agents', 'Agenci i zasoby'], ['policy', 'Polityka']];
+const NAV = [['operations', 'Operations'], ['incidents', 'Incidents'], ['events', 'Events'], ['ghost', 'Ghost Shell'], ['agents', 'Agents & resources'], ['policy', 'Policy']];
 
 function initialPage() {
   const h = (window.location.hash || '').replace('#/', '').split('?')[0];
@@ -113,13 +113,13 @@ function App() {
   const drawerEvent = events.find(e => e.id === drawer) || (drawerFallback?.id === drawer ? drawerFallback : null);
   async function approve(id) {
     setBusy(true);
-    try { const r = await api(`/v1/approvals/${encodeURIComponent(id)}/approve`, key, { method: 'POST' }); setNotice(r.executed ? 'Zatwierdzono i wykonano działanie.' : 'Zatwierdzono, ale działanie nie zostało wykonane.'); loadSummary(); }
+    try { const r = await api(`/v1/approvals/${encodeURIComponent(id)}/approve`, key, { method: 'POST' }); setNotice(r.executed ? 'Approved and executed.' : 'Approved, but the action was not executed.'); loadSummary(); }
     catch (e) { setNotice(e.message); } finally { setBusy(false); }
   }
   async function exportFile(kind) {
     try {
       const r = await fetch(`/v1/audit/export.${kind}?since=${encodeURIComponent(new Date(Date.now() - rangeMs[range]).toISOString())}`, { headers: { Authorization: `Bearer ${key}` } });
-      if (!r.ok) throw new Error('Nie udało się pobrać dziennika.');
+      if (!r.ok) throw new Error('Could not download the audit log.');
       const url = URL.createObjectURL(await r.blob()); const a = document.createElement('a'); a.href = url; a.download = `masqe-audit.${kind}`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
       setExported(true);
     } catch (e) { setNotice(e.message); }
@@ -129,20 +129,20 @@ function App() {
 
   const openIncidents = incidents.filter(i => i.status !== 'resolved').length;
   const progress = useMemo(() => juryProgress({ events, incidents, policyHash: policy?.hash, initialHash: initialHash.current, exported }), [events, incidents, policy?.hash, exported]);
-  const nav = demo ? [...NAV, ['playground', 'Plac testowy']] : NAV;
+  const nav = demo ? [...NAV, ['playground', 'Playground']] : NAV;
   const [title, subtitle] = PAGES[page];
   const chip = (label, state, tip) => <span className={`svc ${state}`} title={tip}><i />{label}</span>;
 
   return <div className={`app console ${demo ? 'demo' : ''}`}>
     <aside className="sidebar">
       <div className="brand"><Mark /><span>MASQE<small>AI SECURITY CONSOLE</small></span></div>
-      <nav className="nav" aria-label="Nawigacja">{nav.map(([id, name]) => <button key={id} className={page === id ? 'active' : ''} onClick={() => go(id)}>
+      <nav className="nav" aria-label="Navigation">{nav.map(([id, name]) => <button key={id} className={page === id ? 'active' : ''} onClick={() => go(id)}>
         <Icon name={id} /><span>{name}</span>{id === 'incidents' && openIncidents > 0 && <b className="count">{openIncidents}</b>}
       </button>)}</nav>
       <div className="sidebar-foot">
-        <label className="switch"><input type="checkbox" checked={demo} onChange={e => { setDemo(e.target.checked); if (!e.target.checked) { setGenerator(false); setJury(false); if (page === 'playground') setPage('operations'); } }} /><span />Tryb demo</label>
-        <div className="account"><span className="avatar">{(me?.user_id || '?')[0].toUpperCase()}</span><span><strong>{me?.user_id || 'Brak połączenia'}</strong><small>{me?.role || 'nieprawidłowy klucz'}</small></span></div>
-        {!demo && <form className="key-form" onSubmit={e => { e.preventDefault(); switchKey(keyDraft.trim()); setKeyDraft(''); }}><input type="password" placeholder="Klucz API" value={keyDraft} onChange={e => setKeyDraft(e.target.value)} aria-label="Klucz API" autoComplete="off" /><button className="secondary small">Zaloguj</button></form>}
+        <label className="switch"><input type="checkbox" checked={demo} onChange={e => { setDemo(e.target.checked); if (!e.target.checked) { setGenerator(false); setJury(false); if (page === 'playground') setPage('operations'); } }} /><span />Demo mode</label>
+        <div className="account"><span className="avatar">{(me?.user_id || '?')[0].toUpperCase()}</span><span><strong>{me?.user_id || 'Not connected'}</strong><small>{me?.role || 'invalid key'}</small></span></div>
+        {!demo && <form className="key-form" onSubmit={e => { e.preventDefault(); switchKey(keyDraft.trim()); setKeyDraft(''); }}><input type="password" placeholder="API key" value={keyDraft} onChange={e => setKeyDraft(e.target.value)} aria-label="API key" autoComplete="off" /><button className="secondary small">Sign in</button></form>}
       </div>
     </aside>
     <main className="main">
@@ -150,34 +150,35 @@ function App() {
         <div className="bar-title"><h1>{title}</h1><p>{subtitle}</p></div>
         <div className="bar-tools">
           <div className="services">
-            {chip('Brama', health ? (health.status === 'ok' ? 'ok' : 'warn') : 'bad', health?.config_error ? 'Ostatnia zmiana konfiguracji odrzucona' : 'Gateway')}
-            {chip('Warstwa AI', health?.semantic_degraded ? 'bad' : 'ok', health?.semantic_degraded ? 'AI Guard niedostępny — blokowanie ostrożne' : 'AI Guard')}
+            {chip('Gateway', health ? (health.status === 'ok' ? 'ok' : 'warn') : 'bad', health?.config_error ? 'Last configuration change rejected' : 'Gateway')}
+            {chip('AI layer', health?.semantic_degraded ? 'bad' : 'ok', health?.semantic_degraded ? 'AI Guard unavailable: failing closed' : 'AI Guard')}
+            {chip('PII model', health?.pii_model === 'enabled' ? 'ok' : health?.pii_model === 'degraded' ? 'bad' : 'warn', health?.pii_model === 'enabled' ? 'HerBERT (PLVeil) active' : health?.pii_model === 'degraded' ? 'Model unavailable: rules only' : health?.pii_model === 'not_installed' ? 'Model not installed in this deployment: rules only' : health?.pii_model === 'loading' ? 'Model loading: rules only for now' : 'Disabled in policy')}
             {chip('Ghost', data.ghost_shell?.available ? 'ok' : 'warn', 'Ghost Shell')}
-            {chip(stream === 'live' ? 'Na żywo' : stream === 'connecting' ? 'Łączenie' : 'Offline', stream === 'live' ? 'live' : stream === 'connecting' ? 'warn' : 'bad', 'Strumień zdarzeń')}
+            {chip(stream === 'live' ? 'Live' : stream === 'connecting' ? 'Connecting' : 'Offline', stream === 'live' ? 'live' : stream === 'connecting' ? 'warn' : 'bad', 'Event stream')}
           </div>
-          <Segmented label="Zakres czasu" value={range} options={RANGES} onChange={r => setRange(r)} />
-          <form className="search" onSubmit={e => { e.preventDefault(); go('events', { q: search }); }}><Icon name="search" /><input placeholder="Szukaj zdarzeń…" value={search} onChange={e => setSearch(e.target.value)} aria-label="Szukaj zdarzeń" /></form>
-          <button className="bell" onClick={() => go('incidents')} aria-label={`Incydenty: ${openIncidents}`}><Icon name="bell" />{openIncidents + approvals.length > 0 && <b>{openIncidents + approvals.length}</b>}</button>
+          <Segmented label="Time range" value={range} options={RANGES} onChange={r => setRange(r)} />
+          <form className="search" onSubmit={e => { e.preventDefault(); go('events', { q: search }); }}><Icon name="search" /><input placeholder="Search events…" value={search} onChange={e => setSearch(e.target.value)} aria-label="Search events" /></form>
+          <button className="bell" onClick={() => go('incidents')} aria-label={`Incidents: ${openIncidents}`}><Icon name="bell" />{openIncidents + approvals.length > 0 && <b>{openIncidents + approvals.length}</b>}</button>
         </div>
       </header>
       {demo && <div className="demo-bar">
-        <span className="eyebrow">TRYB DEMO</span>
-        <label>Działam jako <select value={key} onChange={e => switchKey(e.target.value)}>{DEMO_IDENTITIES.map(([k, n, r]) => <option key={k} value={k}>{n} · {r}</option>)}</select></label>
-        <label className="switch small"><input type="checkbox" checked={generator} onChange={e => setGenerator(e.target.checked)} /><span />Generator ruchu pracowników</label>
-        <button className="secondary small" onClick={() => setJury(!jury)}>Scenariusz dla jury · {Object.values(progress).filter(Boolean).length}/8</button>
-        <button className="secondary small" onClick={() => go('playground')}>Plac testowy →</button>
+        <span className="eyebrow">DEMO MODE</span>
+        <label>Acting as <select value={key} onChange={e => switchKey(e.target.value)}>{DEMO_IDENTITIES.map(([k, n, r]) => <option key={k} value={k}>{n} · {r}</option>)}</select></label>
+        <label className="switch small"><input type="checkbox" checked={generator} onChange={e => setGenerator(e.target.checked)} /><span />Employee traffic generator</label>
+        <button className="secondary small" onClick={() => setJury(!jury)}>Jury checklist · {Object.values(progress).filter(Boolean).length}/8</button>
+        <button className="secondary small" onClick={() => go('playground')}>Playground →</button>
       </div>}
-      {offline && <div className="alert" role="alert">Brak połączenia z bramą: {offline}</div>}
-      {health?.config_error && <div className="alert" role="alert"><strong>Ostatnia zmiana konfiguracji została odrzucona.</strong> Działa poprzednia poprawna polityka. <code>{health.config_error}</code></div>}
-      {notice && <div className="notice" role="status">{notice}<button onClick={() => setNotice('')} aria-label="Zamknij">×</button></div>}
+      {offline && <div className="alert" role="alert">No connection to the gateway: {offline}</div>}
+      {health?.config_error && <div className="alert" role="alert"><strong>The last configuration change was rejected.</strong> The previous valid policy keeps serving. <code>{health.config_error}</code></div>}
+      {notice && <div className="notice" role="status">{notice}<button onClick={() => setNotice('')} aria-label="Close">×</button></div>}
       {page === 'operations' && <Operations data={data} events={events} fresh={fresh} incidents={incidents} approvals={approvals} me={me} range={range} go={go} openEvent={openEvent} approve={approve} busy={busy} paused={paused} setPaused={setPaused} buffered={buffer.length} flush={flush} demo={demo} />}
       {page === 'incidents' && <Incidents apiKey={key} incidents={incidents} selectedId={incidentId} select={setIncidentId} canTriage={can('audit.read_all')} reload={loadSummary} openGhost={id => go('ghost', { session: id })} openEvent={openEvent} />}
-      {page === 'events' && <Events events={events} filters={filters} setFilters={setFilters} openEvent={openEvent} canExport={can('audit.export')} exportFile={exportFile} scope={scope} />}
+      {page === 'events' && <Events events={events} filters={filters} setFilters={setFilters} openEvent={openEvent} canExport={can('audit.export')} exportFile={exportFile} scope={scope} apiKey={key} canVerify={can('audit.read_all')} />}
       {page === 'ghost' && <GhostShell key={`${key}-${ghostSession}`} apiKey={key} api={api} XAI={Explanation} initialSession={ghostSession} demo={demo} />}
       {page === 'agents' && <Agents data={data} policy={policy} />}
       {page === 'policy' && <PolicyPage policy={policy} health={health} />}
       {page === 'playground' && <Playground me={me} run={run} openEvent={openEvent} openGhost={id => go('ghost', { session: id })} />}
-      <footer className="foot"><span>MASQE · zero-trust gateway dla agentów AI</span><span>{number(events.length)} zdarzeń w widoku · polityka {policy?.hash || '—'}</span></footer>
+      <footer className="foot"><span>MASQE · zero-trust gateway for AI agents</span><span>{number(events.length)} events in view · policy {policy?.hash || '—'}</span></footer>
     </main>
     {drawerEvent && <EventDrawer event={drawerEvent} onClose={() => setDrawer(null)} onSession={sid => go('events', { session: sid })} onGhost={sid => go('ghost', { session: sid })} />}
     {demo && jury && <JuryPanel progress={progress} onClose={() => setJury(false)} />}

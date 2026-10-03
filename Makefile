@@ -1,4 +1,4 @@
-.PHONY: setup test test-unit test-e2e run build demo clean reset-data
+.PHONY: setup test test-unit test-e2e run build demo tamper-demo clean reset-data
 
 # Use the project virtualenv when `make setup` created it.
 PYTHON ?= $(shell [ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)
@@ -8,6 +8,8 @@ export GOCACHE := $(CURDIR)/.cache/go-build
 setup:
 	python3 -m venv .venv
 	.venv/bin/python -m pip install -q -r ai-guard/requirements.txt
+	.venv/bin/python -m pip install -q -r ai-guard/requirements-ner.txt || echo 'HerBERT PII model deps not installed: rules-only redaction'
+	.venv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('OskarBartoszyk/PLVeilBest')" || echo 'PLVeil model not downloaded: it will download on first start, or MASQE uses rules only'
 	cd dashboard && npm ci && npm run build
 	go mod download
 
@@ -32,9 +34,14 @@ build:
 demo:
 	$(PYTHON) demo-agent/agent.py
 
+# Rewrite a BLOCK to ALLOW directly in SQLite and watch the audit chain catch it
+# (make tamper-demo UNDO=1 restores it).
+tamper-demo:
+	$(PYTHON) scripts/tamper_demo.py $(if $(UNDO),--undo)
+
 clean:
 	go clean -testcache
 
 # Start the demo with an empty audit log and budget ledger.
 reset-data:
-	rm -f data/masqe.db data/masqe.db-wal data/masqe.db-shm
+	rm -f data/masqe.db data/masqe.db-wal data/masqe.db-shm data/masqe.db.audit-key data/tamper-demo.json

@@ -36,14 +36,14 @@ export function Empty({ children }) { return <div className="empty-state">{child
 const MARK = { pass: '✓', flag: '!', fail: '✕', skip: '–' };
 
 export function Trace({ steps }) {
-  if (!steps?.length) return <p className="muted small">Brak śladu decyzji dla tego zdarzenia.</p>;
+  if (!steps?.length) return <p className="muted small">No decision trace for this event.</p>;
   return <ol className="trace">{steps.map((st, i) => <li key={i} className={st.result}>
     <span className="trace-mark" aria-label={st.result}>{MARK[st.result] || '·'}</span>
     <div className="trace-body">
       <div className="trace-line"><strong>{CHECK[st.check] || st.check}</strong><span>{st.check === 'decision' ? (DECISION[st.detail]?.[0] || st.detail) : st.detail}</span></div>
-      {st.score != null && <div className="trace-score" title={st.threshold != null ? `wynik ${st.score} · próg ${st.threshold}` : `wynik ${st.score}`}>
+      {st.score != null && <div className="trace-score" title={st.threshold != null ? `score ${st.score} · threshold ${st.threshold}` : `score ${st.score}`}>
         <span className="track"><i style={{ width: `${Math.min(100, st.score * 100)}%` }} />{st.threshold != null && <b style={{ left: `${st.threshold * 100}%` }} />}</span>
-        <code>{st.score.toFixed(2)}{st.threshold != null && ` / próg ${st.threshold.toFixed(2)}`}</code>
+        <code>{st.score.toFixed(2)}{st.threshold != null && ` / threshold ${st.threshold.toFixed(2)}`}</code>
       </div>}
     </div>
   </li>)}</ol>;
@@ -52,12 +52,12 @@ export function Trace({ steps }) {
 export function Explanation({ evaluation }) {
   const x = evaluation.explanation || {};
   if (x.status === 'not_required') return null;
-  if (x.status === 'pending') return <div className="xai pending"><span className="eyebrow">WYJAŚNIENIE AI</span><p>Lokalny model przygotowuje opis w tle. Decyzja została już wyegzekwowana.</p></div>;
-  if (x.status !== 'generated') return <div className="xai muted-box"><span className="eyebrow">WYJAŚNIENIE AI</span><p>Model wyjaśniający nie odpowiedział. Rozstrzygają powody techniczne powyżej.</p></div>;
-  return <div className="xai"><span className="eyebrow">WYJAŚNIENIE AI · {x.model}</span><h3>{x.title}</h3><p>{x.summary}</p>
+  if (x.status === 'pending') return <div className="xai pending"><span className="eyebrow">AI EXPLANATION</span><p>The local model is writing an explanation in the background. The decision has already been enforced.</p></div>;
+  if (x.status !== 'generated') return <div className="xai muted-box"><span className="eyebrow">AI EXPLANATION</span><p>The explanation model did not respond. The technical reasons above are authoritative.</p></div>;
+  return <div className="xai"><span className="eyebrow">AI EXPLANATION · {x.model}</span><h3>{x.title}</h3><p>{x.summary}</p>
     {x.factors?.length > 0 && <ul>{x.factors.map((f, i) => <li key={i}>{f}</li>)}</ul>}
-    {x.next_step && <p className="next"><strong>Co dalej: </strong>{x.next_step}</p>}
-    <p className="fineprint">Tekst wygenerowany przez model może zawierać błędy; rozstrzygają powody techniczne.</p></div>;
+    {x.next_step && <p className="next"><strong>What next: </strong>{x.next_step}</p>}
+    <p className="fineprint">Model-generated text may contain mistakes; the technical reasons are authoritative.</p></div>;
 }
 
 export function EventDrawer({ event, onClose, onSession, onGhost }) {
@@ -69,30 +69,30 @@ export function EventDrawer({ event, onClose, onSession, onGhost }) {
   if (!event) return null;
   const e = event;
   return <div className="drawer-wrap" onClick={onClose}>
-    <aside className="drawer" role="dialog" aria-label="Szczegóły zdarzenia" onClick={ev => ev.stopPropagation()}>
+    <aside className="drawer" role="dialog" aria-label="Event details" onClick={ev => ev.stopPropagation()}>
       <header className="drawer-head">
         <div><Pill value={e.decision} /><h2>{ACTION[e.action] || e.action}</h2><span className="muted small">{dateTime(e.timestamp)} · <code>{e.id}</code></span></div>
-        <button className="icon-btn" onClick={onClose} aria-label="Zamknij">×</button>
+        <button className="icon-btn" onClick={onClose} aria-label="Close">×</button>
       </header>
       <dl className="facts-grid">
-        <div><dt>Użytkownik</dt><dd>{e.user} <small>{e.role}</small></dd></div>
+        <div><dt>User</dt><dd>{e.user} <small>{e.role}</small></dd></div>
         <div><dt>Agent / model</dt><dd>{e.agent} <small>{e.model || '—'}</small></dd></div>
-        <div className="wide"><dt>Zasób</dt><dd><code>{e.resource || '—'}</code></dd></div>
-        <div><dt>Wykonanie</dt><dd>{EXECUTION[e.execution_status] || e.execution_status}{e.approved_by && <small> · zatwierdził {e.approved_by}</small>}</dd></div>
-        <div><dt>Czas decyzji</dt><dd>{msf(e.gateway_ms)} <small>{e.semantic_escalated ? `+ AI ${msf(e.semantic_ms)}` : 'bez AI'}</small></dd></div>
-        <div><dt>Tokeny / koszt</dt><dd>{number(e.tokens)} <small>{usd(e.cost_usd)}</small></dd></div>
-        {!e.details_hidden && <div><dt>Ryzyko</dt><dd>{percent(e.risk)}</dd></div>}
-        <div className="wide"><dt>Sesja</dt><dd><button className="link" onClick={() => onSession(e.session_id)}>{e.session_id}</button></dd></div>
-        <div className="wide"><dt>Polityka</dt><dd><code>{e.policy_version}</code></dd></div>
+        <div className="wide"><dt>Resource</dt><dd><code>{e.resource || '—'}</code></dd></div>
+        <div><dt>Execution</dt><dd>{EXECUTION[e.execution_status] || e.execution_status}{e.approved_by && <small> · approved by {e.approved_by}</small>}</dd></div>
+        <div><dt>Gateway overhead</dt><dd>{msf(e.gateway_ms)} <small>{[e.semantic_escalated && `AI ${msf(e.semantic_ms)}`, e.pii_model_ms > 0 && `PII model ${msf(e.pii_model_ms)}`].filter(Boolean).join(' · ') || 'no model calls'}{(e.semantic_escalated || e.pii_model_ms > 0) && ' (in parallel)'}</small></dd></div>
+        <div><dt>Tokens / cost</dt><dd>{number(e.tokens)} <small>{usd(e.cost_usd)}</small></dd></div>
+        {!e.details_hidden && <div><dt>Risk</dt><dd>{percent(e.risk)}</dd></div>}
+        <div className="wide"><dt>Session</dt><dd><button className="link" onClick={() => onSession(e.session_id)}>{e.session_id}</button></dd></div>
+        <div className="wide"><dt>Policy</dt><dd><code>{e.policy_version}</code></dd></div>
       </dl>
       {(e.controls || []).length > 0 && <div className="chips">{e.controls.map(c => <span key={c} className="chip">{controlLabel(c)}</span>)}</div>}
-      <h3 className="drawer-sub">Ślad decyzji</h3>
+      <h3 className="drawer-sub">Decision trace</h3>
       <Trace steps={e.trace} />
-      <h3 className="drawer-sub">Powody</h3>
+      <h3 className="drawer-sub">Reasons</h3>
       <ul className="reasons">{(e.reasons || []).map((r, i) => <li key={i}>{r}</li>)}</ul>
-      {e.details_hidden && <p className="muted small">Wyniki detektorów, progi i identyfikatory sygnatur widzi tylko zespół bezpieczeństwa.</p>}
+      {e.details_hidden && <p className="muted small">Detector scores, thresholds and signature IDs are visible to the security team only.</p>}
       {e.decision !== 'ALLOW' && <Explanation evaluation={e} />}
-      {(e.controls || []).includes('ghost_shell') && <button className="secondary full" onClick={() => onGhost(e.session_id)}>Otwórz nagranie w Ghost Shell →</button>}
+      {(e.controls || []).includes('ghost_shell') && <button className="secondary full" onClick={() => onGhost(e.session_id)}>Open the Ghost Shell recording →</button>}
     </aside>
   </div>;
 }
@@ -103,7 +103,7 @@ export function EventRow({ e, onOpen, fresh }) {
     <span className="who"><strong>{e.user}</strong><small>{e.agent}</small></span>
     <span className="what"><strong>{ACTION[e.action] || e.action}</strong><small>{e.resource}</small></span>
     <span className="ctl">{(e.controls || []).slice(0, 2).map(c => <span key={c} className="chip">{controlLabel(c)}</span>)}</span>
-    {e.execution_status === 'EXECUTED_OUTPUT_BLOCKED' ? <span className="pill block"><i />Wynik wstrzymany</span> : <Pill value={e.decision} />}
+    {e.execution_status === 'EXECUTED_OUTPUT_BLOCKED' ? <span className="pill block"><i />Output withheld</span> : <Pill value={e.decision} />}
     <span className="lat">{msf(e.gateway_ms)}</span>
   </button>;
 }

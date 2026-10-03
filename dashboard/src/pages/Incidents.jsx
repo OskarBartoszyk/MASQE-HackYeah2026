@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Panel, Severity, Empty, Pill, Trace } from '../ui';
 import { api, INCIDENT, STATUS, ACTION, dateTime, ago, incidentSummary } from '../lib';
 
-const SOURCE = { ghost_shell: 'Ghost Shell', gateway: 'Brama' };
+const SOURCE = { ghost_shell: 'Ghost Shell', gateway: 'Gateway' };
 
 // Unified incident queue: gateway detections and Ghost Shell evidence.
 export function Incidents({ apiKey, incidents, selectedId, select, canTriage, reload, openGhost, openEvent }) {
@@ -20,32 +20,32 @@ export function Incidents({ apiKey, incidents, selectedId, select, canTriage, re
   const count = s => incidents.filter(i => s === 'active' ? i.status !== 'resolved' : s === 'all' || i.status === s).length;
   return <div className="page">
     <div className="split">
-      <Panel className="list-panel" eyebrow="KOLEJKA" title="Incydenty" action={<div className="segmented small">{[['active', 'Aktywne'], ['acknowledged', 'W toku'], ['resolved', 'Rozwiązane'], ['all', 'Wszystkie']].map(([id, t]) => <button key={id} className={tab === id ? 'on' : ''} onClick={() => setTab(id)}>{t} <small>{count(id)}</small></button>)}</div>}>
+      <Panel className="list-panel" eyebrow="QUEUE" title="Incidents" action={<div className="segmented small">{[['active', 'Active'], ['acknowledged', 'In progress'], ['resolved', 'Resolved'], ['all', 'All']].map(([id, t]) => <button key={id} className={tab === id ? 'on' : ''} onClick={() => setTab(id)}>{t} <small>{count(id)}</small></button>)}</div>}>
         {shown.length ? <ul className="incident-list">{shown.map(i => <li key={i.id}><button className={current?.id === i.id ? 'on' : ''} onClick={() => select(i.id)}>
           <span className="top"><Severity value={i.severity} /><span className={`status ${i.status}`}>{STATUS[i.status]}</span><small>{ago(i.opened_at)}</small></span>
           <strong>{INCIDENT[i.type] || i.type}</strong>
           <small>{SOURCE[i.source]} · {i.user} · {i.agent}</small>
-        </button></li>)}</ul> : <Empty>Brak incydentów w tej kategorii.</Empty>}
+        </button></li>)}</ul> : <Empty>No incidents in this category.</Empty>}
       </Panel>
-      <Panel className="detail-panel" eyebrow={current ? `${SOURCE[current.source]} · ${current.id}` : 'INCYDENT'} title={current ? (INCIDENT[current.type] || current.type) : 'Wybierz incydent'}>
-        {!current ? <Empty>Nowe incydenty pojawią się tu automatycznie.</Empty> : <>
-          <div className="incident-meta"><Severity value={current.severity} /><span className={`status ${current.status}`}>{STATUS[current.status]}</span><span className="muted small">otwarty {dateTime(current.opened_at)}{current.updated_by && ` · zmienił ${current.updated_by}`}</span></div>
+      <Panel className="detail-panel" eyebrow={current ? `${SOURCE[current.source]} · ${current.id}` : 'INCIDENT'} title={current ? (INCIDENT[current.type] || current.type) : 'Select an incident'}>
+        {!current ? <Empty>New incidents appear here automatically.</Empty> : <>
+          <div className="incident-meta"><Severity value={current.severity} /><span className={`status ${current.status}`}>{STATUS[current.status]}</span><span className="muted small">opened {dateTime(current.opened_at)}{current.updated_by && ` · updated by ${current.updated_by}`}</span></div>
           <p className="lead">{incidentSummary(current)}</p>
-          <dl className="facts-grid"><div><dt>Użytkownik</dt><dd>{current.user}</dd></div><div><dt>Agent</dt><dd>{current.agent}</dd></div><div className="wide"><dt>Odniesienie</dt><dd><code>{current.ref}</code></dd></div></dl>
+          <dl className="facts-grid"><div><dt>User</dt><dd>{current.user}</dd></div><div><dt>Agent</dt><dd>{current.agent}</dd></div><div className="wide"><dt>Reference</dt><dd><code>{current.ref}</code></dd></div></dl>
           {canTriage ? <div className="triage">
-            <textarea rows="2" placeholder="Notatka analityka (opcjonalnie)" value={note} onChange={e => setNote(e.target.value)} aria-label="Notatka" />
+            <textarea rows="2" placeholder="Analyst note (optional)" value={note} onChange={e => setNote(e.target.value)} aria-label="Note" />
             <div className="row-gap">
-              {current.status !== 'acknowledged' && current.status !== 'resolved' && <button className="secondary" onClick={() => setStatus('acknowledged')}>Przejmij</button>}
-              {current.status !== 'resolved' && <button className="primary" onClick={() => setStatus('resolved')}>Rozwiąż</button>}
-              {current.status === 'resolved' && <button className="secondary" onClick={() => setStatus('open')}>Otwórz ponownie</button>}
+              {current.status !== 'acknowledged' && current.status !== 'resolved' && <button className="secondary" onClick={() => setStatus('acknowledged')}>Take ownership</button>}
+              {current.status !== 'resolved' && <button className="primary" onClick={() => setStatus('resolved')}>Resolve</button>}
+              {current.status === 'resolved' && <button className="secondary" onClick={() => setStatus('open')}>Reopen</button>}
             </div>
-          </div> : <p className="muted small">Zmiana statusu: rola zespołu bezpieczeństwa.</p>}
-          {current.note && !canTriage && <p className="muted small">Notatka: {current.note}</p>}
+          </div> : <p className="muted small">Changing status requires the security role.</p>}
+          {current.note && !canTriage && <p className="muted small">Note: {current.note}</p>}
           {error && <div className="alert">{error}</div>}
-          {current.source === 'ghost_shell' && <button className="secondary full" onClick={() => openGhost(current.ref)}>Otwórz nagranie sesji w Ghost Shell →</button>}
+          {current.source === 'ghost_shell' && <button className="secondary full" onClick={() => openGhost(current.ref)}>Open the session recording in Ghost Shell →</button>}
           {event && <div className="incident-event">
-            <div className="row-gap"><Pill value={event.decision} /><strong>{ACTION[event.action] || event.action}</strong><button className="link" onClick={() => openEvent(event.id)}>Pełne zdarzenie →</button></div>
-            <h3 className="drawer-sub">Ślad decyzji</h3><Trace steps={event.trace} />
+            <div className="row-gap"><Pill value={event.decision} /><strong>{ACTION[event.action] || event.action}</strong><button className="link" onClick={() => openEvent(event.id)}>Full event →</button></div>
+            <h3 className="drawer-sub">Decision trace</h3><Trace steps={event.trace} />
           </div>}
         </>}
       </Panel>

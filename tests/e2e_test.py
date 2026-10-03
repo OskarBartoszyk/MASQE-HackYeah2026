@@ -55,7 +55,7 @@ class Stack:
 
     def start_guard(self):
         self.guard = subprocess.Popen([sys.executable, str(ROOT / "ai-guard/server.py")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=dict(
-            os.environ, MASQE_AI_GUARD_PORT=str(self.guard_port), MASQE_EXPLAIN_OLLAMA_URL="http://127.0.0.1:9", MASQE_INTERNAL_KEY="e2e-internal", MASQE_GHOST_DB=str(self.dir / "ghost.db")))
+            os.environ, MASQE_AI_GUARD_PORT=str(self.guard_port), MASQE_EXPLAIN_OLLAMA_URL="http://127.0.0.1:9", MASQE_INTERNAL_KEY="e2e-internal", MASQE_NER_DISABLED="1", MASQE_GHOST_DB=str(self.dir / "ghost.db")))
         self.wait(f"http://127.0.0.1:{self.guard_port}/health")
 
     def stop_guard(self):
@@ -392,6 +392,25 @@ class EndToEndTests(unittest.TestCase):
         sources = {i["source"] for i in queue["incidents"]}
         self.assertIn("gateway", sources)
         self.assertIn("ghost_shell", sources)  # from the Ghost Shell attack in test_20
+
+    def test_36_audit_log_is_tamper_evident(self):
+        import sqlite3
+        status, result = self.stack.call("GET", "/v1/audit/verify", "secops-demo-key")
+        self.assertEqual(status, 200)
+        self.assertEqual(result["status"], "intact", result["problems"])
+        self.assertGreater(result["events"], 10)
+        self.assertEqual(self.stack.call("GET", "/v1/audit/verify", "demo-key")[0], 403)
+        # An insider rewrites a BLOCK to ALLOW directly in the database file.
+        db = sqlite3.connect(self.stack.dir / "masqe.db")
+        try:
+            victim = db.execute("SELECT id FROM audit_events WHERE decision='BLOCK' LIMIT 1").fetchone()[0]
+            db.execute("UPDATE audit_events SET decision='ALLOW' WHERE id=?", (victim,)); db.commit()
+            status, result = self.stack.call("GET", "/v1/audit/verify", "secops-demo-key")
+            self.assertEqual(result["status"], "broken")
+            self.assertIn(("record_modified", "event:" + victim), {(p["kind"], p["record"]) for p in result["problems"]})
+        finally:
+            db.execute("UPDATE audit_events SET decision='BLOCK' WHERE id=?", (victim,)); db.commit(); db.close()
+        self.assertEqual(self.stack.call("GET", "/v1/audit/verify", "secops-demo-key")[1]["status"], "intact")
 
     def test_99_semantic_service_down_fails_closed(self):
         self.stack.stop_guard()

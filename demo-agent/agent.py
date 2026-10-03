@@ -91,13 +91,13 @@ def autonomous(url: str, key: str, session: str, model: str, task: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="MASQE Corporate Assistant demo")
-    parser.add_argument("prompt", nargs="?", default="Podsumuj raport Q4")
+    parser.add_argument("prompt", nargs="?", default="Summarize the Q4 report")
     parser.add_argument("--action", default="reports.read")
     parser.add_argument("--resource", default="reports/Q4.pdf")
     parser.add_argument("--key", default=os.getenv("MASQE_API_KEY", "demo-key"), help="Credential bound to a user and role in policy.yaml")
     parser.add_argument("--model", default="demo-local")
     parser.add_argument("--session", default="")
-    parser.add_argument("--intent", default="Podsumuj raport Q4")
+    parser.add_argument("--intent", default="Summarize the Q4 report")
     parser.add_argument("--autonomous", action="store_true", help="Local model plans, invokes one guarded tool, then answers through MASQE")
     parser.add_argument("--url", default="http://127.0.0.1:8080")
     args = parser.parse_args()

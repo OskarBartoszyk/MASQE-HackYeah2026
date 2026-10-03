@@ -1,0 +1,22 @@
+# Build context of the gateway image: only cmd/, gateway/, policies/ and the
+# dashboard sources are needed. Host node_modules must never be copied (they
+# contain macOS/Windows native binaries).
+.git
+.venv
+.cache
+.DS_Store
+**/.DS_Store
+**/__pycache__
+data
+bin
+smoke
+docs
+tests
+sdk
+demo-agent
+ai-guard
+dashboard/node_modules
+dashboard/dist
+*.db
+*.db-wal
+*.db-shm

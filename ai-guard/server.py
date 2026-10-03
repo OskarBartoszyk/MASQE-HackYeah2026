@@ -23,6 +23,7 @@ from typing import Any
 from model import predict
 from explain import explain
 from ghost import GhostError, ghost_dispatch, start_retention_worker
+import ner_service
 
 # --- Attack vocabulary --------------------------------------------------------
 # Exact phrases (kept for explainable signals) ...
@@ -344,10 +345,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.path != "/health":
             self._json(404, {"error": "not found"})
             return
-        self._json(200, {"status": "ok", "backend": "ollama" if os.getenv("OLLAMA_URL") else "offline"})
+        self._json(200, {"status": "ok", "backend": "ollama" if os.getenv("OLLAMA_URL") else "offline", "ner": ner_service.status()})
 
     def do_POST(self) -> None:
-        if self.path not in ("/analyze", "/explain", "/ghost"):
+        if self.path not in ("/analyze", "/explain", "/ghost", "/redact"):
             self._json(404, {"error": "not found"})
             return
         try:
@@ -358,6 +359,18 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length))
             if not isinstance(payload, dict):
                 raise TypeError("payload must be an object")
+            if self.path == "/redact":
+                # Personal data travels here: same internal authentication as /ghost
+                # whenever a key is configured.
+                key = os.getenv("MASQE_INTERNAL_KEY", "")
+                if key and not hmac.compare_digest(self.headers.get("X-MASQE-Internal", ""), key):
+                    self._json(403, {"error": "internal authentication required"})
+                    return
+                try:
+                    self._json(200, {"spans": ner_service.detect(str(payload.get("text") or "")[:100_000])})
+                except ner_service.Unavailable as exc:
+                    self._json(503, {"error": f"NER model unavailable: {exc}"})
+                return
             if self.path == "/ghost":
                 key = os.getenv("MASQE_INTERNAL_KEY", "")
                 if not key or not hmac.compare_digest(self.headers.get("X-MASQE-Internal", ""), key):
@@ -399,6 +412,7 @@ def main() -> None:
     port = int(os.getenv("MASQE_AI_GUARD_PORT", "8090"))
     predict("warm up")  # train once at start-up, not on the first request
     start_retention_worker()
+    ner_service.start_loading()
     print(f"MASQE AI Guard listening on http://{host}:{port}", file=sys.stderr)
     ThreadingHTTPServer((host, port), Handler).serve_forever()
 

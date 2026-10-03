@@ -244,7 +244,7 @@ func (s *ExecutionService) run(ctx context.Context, req EvaluateRequest, ev Eval
 		// Chat requests carry several messages; each is redacted the same way.
 		msgs := make([]ChatMessage, len(req.Messages))
 		for i, m := range req.Messages {
-			msgs[i] = ChatMessage{Role: m.Role, Content: redactForPolicy(m.Content, p)}
+			msgs[i] = ChatMessage{Role: m.Role, Content: s.redactForPolicy(ctx, m.Content, p)}
 		}
 		req.Messages = msgs
 	}
@@ -273,10 +273,11 @@ func (s *ExecutionService) run(ctx context.Context, req EvaluateRequest, ev Eval
 }
 
 // redactForPolicy masks the findings of enabled PII/secret controls.
-func redactForPolicy(text string, p Policy) string {
+func (s *ExecutionService) redactForPolicy(ctx context.Context, text string, p Policy) string {
 	text = Canonicalize(text)
 	var keep []Finding
-	for _, f := range ScanSensitive(text) {
+	found, _, _ := s.Engine.sensitive(ctx, p, text)
+	for _, f := range found {
 		if (isSecretKind(f.Kind) && p.Security.Secrets.Enabled) || (!isSecretKind(f.Kind) && p.Security.PII.Enabled) {
 			keep = append(keep, f)
 		}
@@ -290,7 +291,11 @@ func redactForPolicy(text string, p Policy) string {
 func (s *ExecutionService) guardOutput(ctx context.Context, req EvaluateRequest, resp ExecuteResponse, output string, p Policy) (ExecuteResponse, error) {
 	output = Canonicalize(output)
 	snap, _ := s.Engine.Config.Snapshot()
-	findings := ScanSensitive(output)
+	findings, _, piiErr := s.Engine.sensitive(ctx, p, output)
+	if piiErr != nil {
+		resp.ExecutionError = "output withheld: personal-data model unavailable"
+		return resp, nil
+	}
 	secretAction, piiAction := strings.ToLower(p.Security.Secrets.Action), strings.ToLower(p.Security.PII.Action)
 	secret, pii := false, false
 	var redactable []Finding

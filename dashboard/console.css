@@ -98,3 +98,14 @@ table th { background: #f2f3ed; color: #838a7d; font-size: 9px; font-weight: 500
 .evidence-event code, .evidence-event time { color: #758265; }
 .incident-status p { color: #768466; }
 .ghost-intro p, .topbar p { color: #717b6c; }
+
+.integrity { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; padding: 12px 16px; border: 1px solid #d8e0c9; background: #f1f5e9; border-radius: 5px; font-size: 12px; color: #35735b; }
+.integrity > div { min-width: 0; flex: 1 1 320px; }
+.integrity strong { font-weight: 560; }
+.integrity .mark { display: inline-block; width: 18px; font-weight: 700; }
+.integrity p { margin: 4px 0 0 18px; font-size: 11px; color: #5e6f55; overflow-wrap: anywhere; }
+.integrity code { font-size: 11px; }
+.integrity ul { margin: 8px 0 0 18px; padding-left: 16px; font-size: 11px; }
+.integrity li { margin: 3px 0; overflow-wrap: anywhere; }
+.integrity.broken { border-color: #f1d1ca; background: #fff0ed; color: #9b4a45; }
+.integrity.broken p { color: #9b4a45; }

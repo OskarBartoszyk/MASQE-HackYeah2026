@@ -1,6 +1,9 @@
 services:
   ai-guard:
-    build: ./ai-guard
+    build:
+      context: ./ai-guard
+      args:
+        INSTALL_NER: ${MASQE_INSTALL_NER:-true}
     environment:
       MASQE_AI_GUARD_HOST: 0.0.0.0
       MASQE_EXPLAIN_OLLAMA_URL: http://host.docker.internal:11434
@@ -19,7 +22,8 @@ services:
 
   gateway:
     build: .
-    ports: ["8080:8080"]
+    # Loopback only: the sample API keys in policy.yaml are public.
+    ports: ["127.0.0.1:8080:8080"]
     environment:
       MASQE_AI_GUARD_URL: http://ai-guard:8090
       MASQE_INTERNAL_KEY: ${MASQE_INTERNAL_KEY:-local-demo-internal-key}

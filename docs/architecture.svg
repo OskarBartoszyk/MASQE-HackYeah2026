@@ -15,7 +15,7 @@
     <rect x="40" y="198" width="210" height="52" rx="7" fill="#fff" stroke="#cfd3cb"/><text x="56" y="221" font-weight="600">Any OpenAI SDK app</text><text x="56" y="239" font-size="11" fill="#6f7877">/v1/chat/completions</text>
     <rect x="40" y="262" width="210" height="52" rx="7" fill="#fff" stroke="#cfd3cb"/><text x="56" y="285" font-weight="600">Python SDK tools</text><text x="56" y="303" font-size="11" fill="#6f7877">/v1/authorize · /v1/outputs</text>
     <rect x="40" y="326" width="210" height="52" rx="7" fill="#fff" stroke="#cfd3cb"/><text x="56" y="349" font-weight="600">MCP client / server</text><text x="56" y="367" font-size="11" fill="#6f7877">masqe_mcp.py (stdio)</text>
-    <rect x="40" y="390" width="210" height="52" rx="7" fill="#fff" stroke="#cfd3cb"/><text x="56" y="413" font-weight="600">User-facing app</text><text x="56" y="431" font-size="11" fill="#6f7877">/v1/sessions (locks intent)</text>
+    <rect x="40" y="390" width="210" height="52" rx="7" fill="#fff" stroke="#cfd3cb"/><text x="56" y="413" font-weight="600">User-facing app</text><text x="56" y="431" font-size="11" fill="#6f7877">/v1/sessions (registers intent)</text>
   </g>
   <g stroke="#4b5753" stroke-width="1.6" fill="none" marker-end="url(#a)">
     <path d="M250 160 H322"/><path d="M250 224 H322"/><path d="M250 288 H322"/><path d="M250 352 H322"/><path d="M250 416 H322"/>
@@ -27,13 +27,13 @@
   <text x="346" y="158" font-size="11" fill="#4f6a58">the only component that decides</text>
   <g font-size="12" fill="#1f2a27">
     <rect x="346" y="172" width="390" height="44" rx="6" fill="#fff" stroke="#c5d3c0"/><text x="360" y="191" font-weight="600">1 · Identity &amp; authority</text><text x="360" y="207" font-size="11" fill="#5d6765">API key → user · role ∩ agent ∩ action ∩ resource policy</text>
-    <rect x="346" y="224" width="390" height="44" rx="6" fill="#fff" stroke="#c5d3c0"/><text x="360" y="243" font-weight="600">2 · Deterministic guards (no AI, &lt; 1 ms)</text><text x="360" y="259" font-size="11" fill="#5d6765">PII · secrets · 26 exploit signatures · honeytokens · budgets · runaway limits</text>
+    <rect x="346" y="224" width="390" height="44" rx="6" fill="#fff" stroke="#c5d3c0"/><text x="360" y="243" font-weight="600">2 · Deterministic guards + local PII model</text><text x="360" y="259" font-size="11" fill="#5d6765">HerBERT PII · secrets · signatures · honeytokens</text>
     <rect x="346" y="276" width="390" height="44" rx="6" fill="#fff" stroke="#c5d3c0"/><text x="360" y="295" font-weight="600">3 · Semantic escalation (only when needed)</text><text x="360" y="311" font-size="11" fill="#5d6765">injection · exfiltration · Intent Lock · Privilege Drift · memory poisoning</text>
-    <rect x="346" y="328" width="390" height="44" rx="6" fill="#fff" stroke="#c5d3c0"/><text x="360" y="347" font-weight="600">4 · Risk engine → decision</text><text x="360" y="363" font-size="11" fill="#5d6765">ALLOW · REDACT · GHOST · REQUIRE_APPROVAL · THROTTLE · BLOCK</text>
+    <rect x="346" y="328" width="390" height="44" rx="6" fill="#fff" stroke="#c5d3c0"/><text x="360" y="347" font-weight="600">4 · Risk engine → decision</text><text x="360" y="363" font-size="11" fill="#5d6765">risk → ALLOW · REDACT · GHOST · APPROVAL · BLOCK</text>
     <rect x="346" y="380" width="390" height="44" rx="6" fill="#fff" stroke="#c5d3c0"/><text x="360" y="399" font-weight="600">5 · Execution with redacted input</text><text x="360" y="415" font-size="11" fill="#5d6765">only allowed actions reach tools and models</text>
     <rect x="346" y="432" width="390" height="44" rx="6" fill="#fff" stroke="#c5d3c0"/><text x="360" y="451" font-weight="600">6 · Output guard</text><text x="360" y="467" font-size="11" fill="#5d6765">PII · secrets · honeytokens · signatures · indirect prompt injection</text>
   </g>
-  <text x="346" y="498" font-size="11" fill="#4f6a58">decision trace + audit for every request · SSE live stream</text>
+  <text x="346" y="498" font-size="11" fill="#4f6a58">decision trace + hash-chained audit for every request · SSE live stream</text>
 
   <!-- AI Guard -->
   <rect x="820" y="250" width="420" height="104" rx="10" fill="#fff" stroke="#cfd3cb"/>
@@ -43,7 +43,6 @@
   <text x="838" y="334" font-size="12" fill="#3d4842">async plain-language explanations (local Gemma)</text>
   <path d="M736 298 H816" stroke="#4b5753" stroke-width="1.6" fill="none" marker-end="url(#a)"/>
   <path d="M816 318 H740" stroke="#4b5753" stroke-width="1.6" fill="none" marker-end="url(#a)" stroke-dasharray="5 4"/>
-  <text x="752" y="290" font-size="10" fill="#5d6765">request</text><text x="752" y="334" font-size="10" fill="#5d6765">scores only</text>
 
   <!-- Tools / models -->
   <rect x="820" y="110" width="200" height="110" rx="10" fill="#fff" stroke="#cfd3cb"/>
@@ -76,9 +75,9 @@
   <rect x="820" y="548" width="420" height="70" rx="10" fill="#26332d"/>
   <text x="838" y="574" font-size="15" font-weight="700" fill="#eef3ec">Security console</text>
   <text x="838" y="596" font-size="12" fill="#c9d6cc">live stream · incidents workflow · decision trace</text>
-  <text x="838" y="612" font-size="11" fill="#9fb1a5">budgets · costs · latency p50/p95/p99 · CSV/JSON audit export</text>
+  <text x="838" y="612" font-size="11" fill="#9fb1a5">tamper-evident audit · budgets · latency percentiles · CSV/JSON export</text>
   <path d="M756 490 C800 490 790 583 816 583" stroke="#4b5753" stroke-width="1.6" fill="none" marker-end="url(#a)"/>
-  <text x="766" y="540" font-size="10" fill="#5d6765">SQLite audit</text>
+  <text x="786" y="530" font-size="10" fill="#5d6765" text-anchor="end">HMAC-chained</text><text x="786" y="542" font-size="10" fill="#5d6765" text-anchor="end">audit</text>
 
-  <text x="40" y="690" font-size="12" fill="#6f7877">Fail-closed: if the AI Guard is down, requests needing semantic analysis are blocked; short low-risk requests keep the deterministic fast path.</text>
+  <text x="40" y="690" font-size="12" fill="#6f7877">Policy-checked access · deterministic + semantic controls · fail-closed when required analysis is unavailable.</text>
 </svg>

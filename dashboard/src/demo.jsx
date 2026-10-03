@@ -7,7 +7,7 @@ const PROFILES = [
   ['demo-key', 'customer.read', 'customer/123', 'Look up customer 123 for the support ticket', 'Look up customer 123 for the support ticket'],
   ['demo-key', 'documents.read', 'documents/operating-summary', 'Read the operating summary', 'Read the operating summary'],
   ['support-demo-key', 'customer.read', 'customer/456', 'Check the status of customer 456', 'Check the status of customer 456'],
-  ['support-demo-key', 'email.send', 'mail/outbox', 'Send the approved shipping update to the customer', 'Reply to the customer about the shipping update'],
+  ['support-demo-key', 'email.send', 'mail/outbox', 'Send the approved shipping update to the customer', 'Send the approved shipping update to the customer'],
   ['developer-demo-key', 'llm.generate', 'model/demo-local', 'Draft release notes for version 2.4', 'Draft release notes for version 2.4'],
   ['developer-demo-key', 'documents.read', 'documents/hr-policy', 'Read the HR policy summary', 'Read the HR policy summary'],
   ['viewer-demo-key', 'reports.read', 'reports/Q4.pdf', 'Show me the Q4 report', 'Show me the Q4 report'],
@@ -21,7 +21,12 @@ export function useTrafficGenerator(enabled) {
     const started = Date.now().toString(36);
     async function tick() {
       const [key, action, resource, prompt, intent] = PROFILES[Math.floor(Math.random() * PROFILES.length)];
-      const sid = sessions.current[key + intent] ||= `gen-${started}-${Object.keys(sessions.current).length}`;
+      // A real task is a few steps long: start a new session every 3–5 calls so
+      // the runaway limit (max tool calls per session) is never hit by normal work.
+      const slot = sessions.current[key + intent] ||= { n: 0, id: '' };
+      if (!slot.id || slot.n >= 3 + Math.floor(Math.random() * 3)) { slot.id = `gen-${started}-${Math.random().toString(36).slice(2, 9)}`; slot.n = 0; }
+      slot.n++;
+      const sid = slot.id;
       try {
         await fetch('/v1/execute', { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ session_id: sid, agent: { id: 'corporate-agent', model: 'demo-local' }, action, resource, prompt, original_intent: intent }) });
@@ -34,14 +39,14 @@ export function useTrafficGenerator(enabled) {
 }
 
 const STEPS = [
-  ['allow', 'Zwykłe zadanie przechodzi', 'Plac testowy → „Zwykłe zadanie”.'],
-  ['injection', 'Atak na instrukcje zablokowany', 'Własny prompt, np. „Ignore previous instructions…”, lub scenariusz „Jailbreak”.'],
-  ['pii', 'Dane osobowe zredagowane', 'Scenariusz „Dane osobowe” albo własny PESEL / e-mail / IBAN.'],
-  ['signature', 'Sygnatura z threat feed', 'Dopisz wzorzec do policies/threat-feed.yaml i wyślij pasujący tekst.'],
-  ['reload', 'Zmiana polityki bez restartu', 'Zmień np. mode: strict → permissive w policies/policy.yaml.'],
-  ['ghost', 'Atak przechwycony w Ghost Shell', 'Ghost Shell → „Odtwórz scenariusz ataku”.'],
-  ['approval', 'Zgoda drugiej osoby', 'Jako Admin: usuń klienta; jako SecOps: zatwierdź.'],
-  ['export', 'Eksport dziennika', 'Zdarzenia → Eksport CSV/JSON (rola SecOps).'],
+  ['allow', 'A normal task is allowed', 'Playground → “Normal task”.'],
+  ['injection', 'An instruction attack is blocked', 'Your own prompt, e.g. “Ignore previous instructions…”, or the “Jailbreak” scenario.'],
+  ['pii', 'Personal data is redacted', 'The “Personal data” scenario, or your own name / PESEL / e-mail / IBAN.'],
+  ['signature', 'Threat-feed signature', 'Add a pattern to policies/threat-feed.yaml and send matching text.'],
+  ['reload', 'Policy change without restart', 'Change e.g. mode: strict → permissive in policies/policy.yaml.'],
+  ['ghost', 'Attack captured in Ghost Shell', 'Ghost Shell → “Replay attack scenario”.'],
+  ['approval', 'Second-person approval', 'As Admin: delete a customer; as SecOps: approve it.'],
+  ['export', 'Audit export', 'Events → Export CSV/JSON (SecOps role).'],
 ];
 
 export function juryProgress({ events, incidents, policyHash, initialHash, exported }) {
@@ -61,9 +66,9 @@ export function juryProgress({ events, incidents, policyHash, initialHash, expor
 
 export function JuryPanel({ progress, onClose }) {
   const done = STEPS.filter(([id]) => progress[id]).length;
-  return <aside className="jury" aria-label="Scenariusz dla jury">
-    <header><div><span className="eyebrow">TRYB DEMO</span><h2>Scenariusz dla jury</h2><span className="muted small">{done} z {STEPS.length} kroków · odhacza się samo</span></div><button className="icon-btn" onClick={onClose} aria-label="Zamknij">×</button></header>
+  return <aside className="jury" aria-label="Jury checklist">
+    <header><div><span className="eyebrow">DEMO MODE</span><h2>Jury checklist</h2><span className="muted small">{done} of {STEPS.length} steps · ticks itself off</span></div><button className="icon-btn" onClick={onClose} aria-label="Close">×</button></header>
     <ol>{STEPS.map(([id, title, hint]) => <li key={id} className={progress[id] ? 'done' : ''}><span>{progress[id] ? '✓' : '○'}</span><div><strong>{title}</strong><small>{hint}</small></div></li>)}</ol>
-    <p className="muted small">Zestaw testów: <code>make test</code> (Go, Python, end-to-end).</p>
+    <p className="muted small">Test suite: <code>make test</code> (Go, Python, end-to-end).</p>
   </aside>;
 }

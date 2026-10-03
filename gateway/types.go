@@ -71,6 +71,9 @@ type Timings struct {
 	GatewayMS       float64 `json:"gateway_ms"`
 	DeterministicMS float64 `json:"deterministic_ms"`
 	SemanticMS      float64 `json:"semantic_ms"`
+	// PIIModelMS is the HerBERT call (0 when cached); it runs in parallel and
+	// is not part of GatewayMS.
+	PIIModelMS float64 `json:"pii_model_ms"`
 }
 
 type GhostSession struct {
@@ -138,6 +141,7 @@ type AuditEvent struct {
 	GatewayMS         float64        `json:"gateway_ms"`
 	DeterministicMS   float64        `json:"deterministic_ms"`
 	SemanticMS        float64        `json:"semantic_ms"`
+	PIIModelMS        float64        `json:"pii_model_ms"`
 	SemanticEscalated bool           `json:"semantic_escalated"`
 	SessionID         string         `json:"session_id,omitempty"`
 	ExecutionStatus   string         `json:"execution_status,omitempty"`

@@ -307,8 +307,22 @@ threat_feed_remote:
   url: ""
   refresh_seconds: 300
 
+# -----------------------------------------------------------------------------
+# Personal-data redaction. Deterministic detectors (PESEL/NIP/IBAN/card
+# checksums, e-mail, phone, secrets) always run. With use_model the
+# fine-tuned Polish HerBERT model (PLVeil, served by the AI Guard) also finds
+# names, surnames, addresses, document numbers and special-category data
+# (health, religion, ethnicity...), on input, output and chat messages.
+#   labels:           model labels treated as personal data (empty = default
+#                     set; DATE, AGE, JOB_TITLE, COMPANY, CITY are left out)
+#   min_score:        minimum model confidence (0..1)
+#   on_model_failure: rules (fall back to deterministic detectors and warn)
+#                     or block (fail closed while the model is unavailable)
+# -----------------------------------------------------------------------------
 redaction:
   language: pl
-  # Reserved: the Polish NER checkpoint has no weights; must stay false.
-  use_model: false
-  model_path: vendor/masqe-model/masqe-ner-v1
+  use_model: true
+  model: OskarBartoszyk/PLVeilBest
+  min_score: 0.5
+  on_model_failure: rules
+  labels: [NAME, SURNAME, ADDRESS, PESEL, PHONE, EMAIL, BANK_ACCOUNT, CREDIT_CARD_NUMBER, DOCUMENT_NUMBER, NIP, DATE_OF_BIRTH, USERNAME, RELATIVE, HEALTH, ETHNICITY, POLITICAL_VIEW, RELIGION, SEXUAL_ORIENTATION, SECRET]

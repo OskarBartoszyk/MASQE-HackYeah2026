@@ -6,7 +6,6 @@ import (
 	"math/big"
 	"net/url"
 	"regexp"
-	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -25,7 +24,7 @@ type detector struct {
 	valid func(text string, start, end int) bool
 }
 
-var secretKinds = map[string]bool{"JWT": true, "API_KEY": true, "PASSWORD": true, "PRIVATE_KEY": true, "AWS_ACCESS_KEY": true, "AWS_SECRET": true, "GITHUB_TOKEN": true, "SLACK_TOKEN": true, "GOOGLE_API_KEY": true, "BEARER_TOKEN": true, "CONNECTION_STRING": true, "ENCODED_SECRET": true}
+var secretKinds = map[string]bool{"SECRET": true, "JWT": true, "API_KEY": true, "PASSWORD": true, "PRIVATE_KEY": true, "AWS_ACCESS_KEY": true, "AWS_SECRET": true, "GITHUB_TOKEN": true, "SLACK_TOKEN": true, "GOOGLE_API_KEY": true, "BEARER_TOKEN": true, "CONNECTION_STRING": true, "ENCODED_SECRET": true}
 
 func isSecretKind(kind string) bool { return secretKinds[kind] }
 
@@ -156,21 +155,7 @@ func ScanSensitive(text string) []Finding {
 			}
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Start == out[j].Start {
-			return out[i].End > out[j].End
-		}
-		return out[i].Start < out[j].Start
-	})
-	filtered := out[:0]
-	last := -1
-	for _, f := range out {
-		if f.Start >= last {
-			filtered = append(filtered, f)
-			last = f.End
-		}
-	}
-	return filtered
+	return nonOverlapping(out)
 }
 
 func RedactText(text string, findings []Finding) string {

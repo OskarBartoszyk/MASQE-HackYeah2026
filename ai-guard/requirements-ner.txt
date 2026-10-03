@@ -1,0 +1,4 @@
+# Optional: Polish PII model (HerBERT fine-tune "PLVeil") used for redaction.
+# Without it MASQE falls back to deterministic rules (see redaction in policy.yaml).
+transformers>=4.41
+torch>=2.2
