@@ -1,0 +1,163 @@
+# =============================================================================
+# MASQE threat feed: signatures of historical attacks on AI systems.
+# Hot-reloaded independently of policy.yaml. Every signature is a
+# case-insensitive RE2 regex matched against the prompt, resource, intent,
+# metadata, base64/URL-decoded payloads, a homoglyph-folded copy, and every
+# tool / model output before it reaches the agent.
+#
+#   action: block | require_approval | ghost | throttle | log
+#   severity / description / reference: shown in audit and dashboard
+#
+# Jury test: append
+#   - id: JURY-1
+#     pattern: 'MY_NEW_ATTACK'
+#     action: block
+# and send MY_NEW_ATTACK. It is blocked on the next request, with no restart.
+# =============================================================================
+version: "2026.10.04"
+signatures:
+  # --- Malicious code execution ------------------------------------------
+  - id: EXPLOIT-001
+    pattern: '(?:curl|wget|fetch)\s+[^|;]*\|\s*(?:sudo\s+)?(?:ba|z|k)?sh\b'
+    action: block
+    severity: critical
+    description: Download-and-execute pipeline (curl/wget piped to a shell)
+  - id: EXPLOIT-001B
+    pattern: '(?:curl|wget)\s+[^|;]*\|\s*(?:python\d?|perl|ruby|node)\b'
+    action: block
+    severity: critical
+    description: Download piped to an interpreter
+  - id: EXPLOIT-003
+    pattern: '\b(?:eval|exec)\s*\('
+    action: block
+    severity: high
+    description: Dynamic code evaluation (LangChain PALChain / LLMMathChain RCE class)
+    reference: CVE-2023-29374, CVE-2023-36258
+  - id: EXPLOIT-005
+    pattern: '\b(?:os\.system|os\.popen|subprocess\.(?:Popen|call|run|check_output)|__import__\s*\(|commands\.getoutput)'
+    action: block
+    severity: high
+    description: Python shell / process execution primitive
+  - id: EXPLOIT-006
+    pattern: '(?:bash\s+-i\s*>&?\s*/dev/tcp/|nc\s+(?:-\w+\s+)*-e\s|ncat\s.*--exec|mkfifo\s+/tmp/)'
+    action: block
+    severity: critical
+    description: Reverse shell
+  - id: EXPLOIT-007
+    pattern: '(?:powershell(?:\.exe)?\s+.*-(?:enc|encodedcommand)\b|\biex\s*\(|invoke-expression|certutil\s+-urlcache)'
+    action: block
+    severity: critical
+    description: Windows living-off-the-land download/execute
+  - id: EXPLOIT-008
+    pattern: '\brm\s+-[a-z]*r[a-z]*f?\s+(?:/|~|\*)(?:\s|$)|:\(\)\s*\{\s*:\|:&\s*\};:|\bmkfs\.|\bdd\s+if=/dev/(?:zero|random)\s+of=/dev/'
+    action: block
+    severity: critical
+    description: Destructive command (recursive delete, fork bomb, disk wipe)
+  - id: EXPLOIT-004
+    pattern: 'JURY_TEST_ATTACK'
+    action: block
+    severity: high
+    description: Jury test marker
+
+  # --- Unsafe deserialization / model-file attacks -----------------------
+  - id: EXPLOIT-002
+    pattern: '\b(?:c?pickle|dill|cloudpickle|joblib|shelve|marshal)\.(?:loads?|open)\s*\('
+    action: block
+    severity: critical
+    description: Unsafe deserialization (pickle-based model files execute code on load)
+    reference: PyTorch/Hugging Face pickle model attacks
+  - id: DESERIALIZATION-002
+    pattern: 'torch\.load\s*\([^)]*weights_only\s*=\s*False'
+    action: block
+    severity: critical
+    description: torch.load with weights_only=False
+    reference: CVE-2025-32434
+  - id: DESERIALIZATION-003
+    pattern: 'yaml\.unsafe_load\s*\(|yaml\.load\s*\(\s*[^,)]*\)|yaml\.load\s*\([^)]*Loader\s*=\s*(?:yaml\.)?(?:Unsafe|Full)?Loader\b'
+    action: block
+    severity: high
+    description: Unsafe YAML deserialization
+  - id: DESERIALIZATION-004
+    pattern: 'numpy\.load\s*\([^)]*allow_pickle\s*=\s*True|np\.load\s*\([^)]*allow_pickle\s*=\s*True'
+    action: block
+    severity: high
+    description: NumPy load with pickle enabled
+  - id: DESERIALIZATION-005
+    pattern: '\$\{jndi:'
+    action: block
+    severity: critical
+    description: Log4Shell JNDI lookup
+    reference: CVE-2021-44228
+
+  # --- Supply chain / model repository -----------------------------------
+  - id: SUPPLY-CHAIN-001
+    pattern: 'trust_remote_code\s*=\s*True'
+    action: block
+    severity: high
+    description: Hugging Face remote code execution on model load
+  - id: SUPPLY-CHAIN-002
+    pattern: 'pip\s+install\s+.*--(?:extra-)?index-url\s+http://|pip\s+install\s+.*--trusted-host'
+    action: block
+    severity: high
+    description: Package install from an untrusted index (dependency confusion)
+  - id: SUPPLY-CHAIN-003
+    pattern: '\.(?:pkl|pickle|joblib)\b.*\b(?:load|download|from_pretrained)|\b(?:load|download|from_pretrained)\b.*\.(?:pkl|pickle|joblib)\b'
+    action: require_approval
+    severity: medium
+    description: Loading a pickle-format model artifact
+  - id: SUPPLY-CHAIN-004
+    pattern: '/api/jobs/.*entrypoint|ray\s+job\s+submit'
+    action: block
+    severity: critical
+    description: Unauthenticated Ray job submission (ShadowRay)
+    reference: CVE-2023-48022
+
+  # --- Data access / SSRF / injection into tools -------------------------
+  - id: SSRF-001
+    pattern: '169\.254\.169\.254|metadata\.google\.internal|100\.100\.100\.200'
+    action: block
+    severity: critical
+    description: Cloud metadata endpoint (credential theft via SSRF)
+  - id: SSRF-002
+    pattern: '\bfile:///|\bgopher://|\bdict://'
+    action: block
+    severity: high
+    description: Dangerous URL scheme
+  - id: TRAVERSAL-001
+    pattern: '(?:\.\./){2,}|/etc/(?:passwd|shadow|sudoers)|\.ssh/(?:id_rsa|authorized_keys)'
+    action: block
+    severity: high
+    description: Path traversal / sensitive system files
+  - id: SQLI-001
+    pattern: '\bunion\s+(?:all\s+)?select\b|;\s*drop\s+(?:table|database)\b|''\s*or\s+''?1''?\s*=\s*''?1|\bxp_cmdshell\b'
+    action: block
+    severity: high
+    description: SQL injection into a database tool
+  - id: SSTI-001
+    pattern: '\{\{.*__(?:class|mro|subclasses|globals|builtins)__'
+    action: block
+    severity: high
+    description: Server-side template injection
+
+  # --- LLM-specific -------------------------------------------------------
+  - id: PROMPT-LEAK-001
+    pattern: '(?:print|return|reveal|show|repeat|output|ujawnij|pokaż|wypisz)\s+(?:me\s+)?(?:the\s+|your\s+)?(?:system|hidden|initial)\s+(?:prompt|instructions?)|(?:prompt|instrukcj\w*)\s+systemow\w*'
+    action: block
+    severity: high
+    description: System prompt extraction
+  - id: EXFIL-MD-001
+    pattern: '!\[[^\]]*\]\(https?://[^)\s]*\?[^)\s]*='
+    action: block
+    severity: high
+    description: Markdown image exfiltration channel (EchoLeak class)
+    reference: CVE-2025-32711
+  - id: MCP-POISON-001
+    pattern: '<(?:important|system|instructions?)>|\[\[\s*system\s*\]\]|\bdo not (?:tell|mention|inform) the user\b'
+    action: block
+    severity: high
+    description: MCP tool-description poisoning / hidden instruction markers
+  - id: JAILBREAK-001
+    pattern: '\b(?:DAN|STAN)\b.{0,40}\b(?:mode|anything|no (?:rules|restrictions))|developer mode (?:enabled|on)|\bdo anything now\b'
+    action: block
+    severity: high
+    description: Known jailbreak personas (DAN family)

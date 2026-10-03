@@ -1,0 +1,295 @@
+# =============================================================================
+# MASQE central policy: the single source of truth for every control.
+#
+# Hot reload: every request checks this file's modification time. A valid edit
+# applies to the very next request, with no restart. An invalid edit (YAML
+# error, unknown action, out-of-range threshold, typo in a role...) is REJECTED:
+# the previous valid policy keeps serving traffic and the error is shown in
+# GET /health, GET /v1/policy and as a banner in the dashboard.
+#
+# Decision ladder (weakest -> strongest):
+#   ALLOW < REDACT < GHOST < REQUIRE_APPROVAL < THROTTLE < BLOCK
+# A control can only make a decision stronger, never weaker.
+# =============================================================================
+
+version: "2026.10.04"
+
+# Active strictness profile: permissive | balanced | strict (see strictness_modes).
+mode: strict
+
+# -----------------------------------------------------------------------------
+# Authentication. API key -> identity. The caller cannot claim another user,
+# role or extra permissions; identity always comes from this table.
+# DEMO KEYS ONLY: replace before any deployment outside a local demo.
+# can_approve: may approve REQUIRE_APPROVAL actions of *other* users.
+# -----------------------------------------------------------------------------
+clients:
+  demo-key: {user_id: alice, role: analyst, agents: [corporate-agent]}
+  viewer-demo-key: {user_id: vicky, role: viewer, agents: [corporate-agent]}
+  support-demo-key: {user_id: bob, role: support, agents: [corporate-agent]}
+  developer-demo-key: {user_id: dev, role: developer, agents: [corporate-agent]}
+  admin-demo-key: {user_id: admin, role: admin, agents: [corporate-agent], can_approve: true}
+  secops-demo-key: {user_id: secops, role: security, agents: [corporate-agent], can_approve: true}
+
+# -----------------------------------------------------------------------------
+# Models. Requests naming a model outside this list are BLOCKED.
+# -----------------------------------------------------------------------------
+allowed_models:
+  - llama3.2
+  - mistral
+  - demo-local
+  - gemma3:4b
+
+# Provider used by llm.generate. Ollama URLs must point to a local host.
+# cost_per_1k_tokens lets the same budget logic cover paid APIs.
+model_providers:
+  demo-local: {kind: mock, cost_per_1k_tokens: 0, max_output_tokens: 128}
+  gemma3:4b: {kind: ollama, url: 'http://127.0.0.1:11434', cost_per_1k_tokens: 0, max_output_tokens: 128}
+  llama3.2: {kind: ollama, url: 'http://127.0.0.1:11434', cost_per_1k_tokens: 0, max_output_tokens: 128}
+  mistral: {kind: ollama, url: 'http://127.0.0.1:11434', cost_per_1k_tokens: 0.002, max_output_tokens: 128}
+
+# -----------------------------------------------------------------------------
+# Strictness profiles. They supply DEFAULT thresholds for the semantic
+# controls and the risk tiers. Switching `mode` changes behaviour immediately.
+#   *_threshold          block/act when the score is >= value (0..1)
+#   intent_min_alignment act when alignment with the user's goal is < value
+#   risk.medium/high/critical: aggregate-risk tiers -> GHOST / APPROVAL / BLOCK
+# -----------------------------------------------------------------------------
+strictness_modes:
+  permissive:
+    prompt_injection_threshold: 0.95
+    data_exfiltration_threshold: 0.95
+    intent_min_alignment: 0.20
+    privilege_drift_threshold: 0.92
+    memory_poisoning_threshold: 0.95
+    output_injection_threshold: 0.95
+    risk: {medium: 0.75, high: 0.90, critical: 0.98}
+  balanced:
+    prompt_injection_threshold: 0.82
+    data_exfiltration_threshold: 0.84
+    intent_min_alignment: 0.34
+    privilege_drift_threshold: 0.80
+    memory_poisoning_threshold: 0.85
+    output_injection_threshold: 0.85
+    risk: {medium: 0.62, high: 0.82, critical: 0.95}
+  strict:
+    prompt_injection_threshold: 0.72
+    data_exfiltration_threshold: 0.76
+    intent_min_alignment: 0.42
+    privilege_drift_threshold: 0.70
+    memory_poisoning_threshold: 0.70
+    output_injection_threshold: 0.75
+    risk: {medium: 0.50, high: 0.74, critical: 0.90}
+
+# -----------------------------------------------------------------------------
+# Guardrails.
+#   enabled:   false removes the control AND its influence on aggregate risk.
+#   action:    block | redact | require_approval | ghost | throttle | log
+#              (redact only for pii/secrets; log = record the finding only)
+#   threshold: optional explicit override (0..1). Leave it out to use the value
+#              of the active strictness profile. Example: add `threshold: 0.5`
+#              to prompt_injection to make only that control stricter.
+# Deterministic (no AI): pii, secrets (+ threat feed, permissions, budgets).
+# Semantic (AI):         prompt_injection, data_exfiltration, intent_lock,
+#                        privilege_drift, memory_poisoning, output_injection.
+# -----------------------------------------------------------------------------
+security:
+  # PESEL, NIP, ID card, IBAN, payment cards, e-mail, phone numbers.
+  pii: {enabled: true, action: redact}
+  # API keys, JWT, AWS/GitHub/Slack/Google tokens, private keys, passwords,
+  # connection strings, also when hidden in base64.
+  secrets: {enabled: true, action: block}
+  prompt_injection: {enabled: true, action: block}
+  data_exfiltration: {enabled: true, action: block}
+  # Compares each action with the original user goal of the session.
+  intent_lock: {enabled: true, action: block}
+  # Behaviour-sequence escalation, tracked per session AND per user+agent.
+  privilege_drift: {enabled: true, action: require_approval}
+  # memory.write content that tries to persist instructions or weaken auth.
+  memory_poisoning: {enabled: true, action: block}
+  # Tool/document/model output carrying instructions (indirect injection).
+  # block = withhold the output from the agent.
+  output_injection: {enabled: true, action: block}
+
+# -----------------------------------------------------------------------------
+# Budgets and runaway protection. Limits are checked for every scope that
+# applies (global, user, agent, model); the strictest one wins.
+#   daily_tokens / daily_cost_usd   reset at 00:00 UTC
+#   requests_per_minute             rate limit (exceeded -> THROTTLE)
+#   max_tool_calls / max_steps      per session (runaway agent -> BLOCK)
+#   max_runtime_ms                  hard timeout of one tool/model execution
+# -----------------------------------------------------------------------------
+budgets:
+  daily_tokens: 1000000
+  daily_cost_usd: 20
+  requests_per_minute: 120
+  max_tool_calls: 20
+  max_steps: 30
+  max_runtime_ms: 120000
+
+# Graduated budget response: <warn_at OK, >=warn_at WARN (reported),
+# >=throttle_at THROTTLE (rate reduced to requests_per_minute * factor),
+# >=100% BLOCK.
+budget_alerts:
+  warn_at: 0.80
+  throttle_at: 0.90
+  throttle_rpm_factor: 0.25
+
+# Applied to every user without an entry in user_budgets, so one user cannot
+# consume the whole shared agent budget.
+user_default_budget:
+  daily_tokens: 30000
+  requests_per_minute: 40
+
+user_budgets:
+  admin: {daily_tokens: 60000, requests_per_minute: 60}
+
+model_budgets:
+  demo-local:
+    daily_tokens: 200000
+    requests_per_minute: 120
+  llama3.2:
+    daily_tokens: 300000
+    requests_per_minute: 90
+  mistral:
+    daily_tokens: 150000
+    daily_cost_usd: 10
+    requests_per_minute: 60
+  gemma3:4b:
+    daily_tokens: 150000
+    requests_per_minute: 30
+
+# -----------------------------------------------------------------------------
+# Roles (Discord-style permission tags).
+#   permissions: what the user may let an agent do on their behalf.
+#   console:     reporting access: telemetry.read, policy.read,
+#                audit.read_own, audit.read_all, audit.export
+# -----------------------------------------------------------------------------
+roles:
+  viewer:
+    permissions: [reports.read, documents.read]
+    console: [telemetry.read, policy.read, audit.read_own]
+  analyst:
+    permissions: [reports.read, documents.read, customer.read, database.query, repository.analyze, llm.generate]
+    console: [telemetry.read, policy.read, audit.read_own]
+  support:
+    permissions: [customer.read, customer.update, email.send, memory.read, memory.write]
+    console: [telemetry.read, policy.read, audit.read_own]
+  developer:
+    permissions: [reports.read, documents.read, database.query, repository.analyze, api.external.call, memory.read, memory.write, llm.generate]
+    console: [telemetry.read, policy.read, audit.read_own]
+  admin:
+    permissions: [reports.read, documents.read, customer.read, customer.update, customer.delete, customer.export, database.query, database.export, repository.analyze, api.external.call, email.send, memory.read, memory.write, llm.generate]
+    console: [telemetry.read, policy.read, audit.read_all, audit.export]
+  security:
+    permissions: [reports.read, documents.read, customer.read, customer.delete, repository.analyze, llm.generate]
+    console: [telemetry.read, policy.read, audit.read_all, audit.export]
+
+# -----------------------------------------------------------------------------
+# Agents. Effective permission = user role ∩ agent ∩ action ∩ resource policy.
+# An agent never has more authority than the user who runs it.
+# -----------------------------------------------------------------------------
+agents:
+  corporate-agent:
+    permissions: [reports.read, documents.read, customer.read, customer.update, customer.delete, customer.export, database.query, database.export, repository.analyze, api.external.call, email.send, memory.read, memory.write, llm.generate]
+    allowed_tools: [get_customer, update_customer, delete_customer, read_document, search_documents, send_email, query_database, memory_read, memory_write, call_external_api]
+    limits:
+      daily_tokens: 50000
+      daily_cost_usd: 5
+      requests_per_minute: 60
+      max_tool_calls: 12
+      max_steps: 30
+      max_runtime_ms: 60000
+
+# -----------------------------------------------------------------------------
+# Actions: required permission, base risk (0..1), data sensitivity (0..1) and
+# whether a second person must approve. Unknown actions are BLOCKED.
+# -----------------------------------------------------------------------------
+actions:
+  reports.read: {permission: reports.read, risk: 0.08, sensitivity: 0.15}
+  documents.read: {permission: documents.read, risk: 0.10, sensitivity: 0.20}
+  customer.read: {permission: customer.read, risk: 0.18, sensitivity: 0.35}
+  customer.update: {permission: customer.update, risk: 0.35, sensitivity: 0.50}
+  customer.delete: {permission: customer.delete, risk: 0.78, sensitivity: 0.80, require_approval: true}
+  customer.export: {permission: customer.export, risk: 0.86, sensitivity: 0.90, require_approval: true}
+  database.query: {permission: database.query, risk: 0.28, sensitivity: 0.45}
+  database.export: {permission: database.export, risk: 0.84, sensitivity: 0.90, require_approval: true}
+  repository.analyze: {permission: repository.analyze, risk: 0.52, sensitivity: 0.50}
+  api.external.call: {permission: api.external.call, risk: 0.58, sensitivity: 0.70}
+  email.send: {permission: email.send, risk: 0.43, sensitivity: 0.50}
+  memory.read: {permission: memory.read, risk: 0.20, sensitivity: 0.30}
+  memory.write: {permission: memory.write, risk: 0.48, sensitivity: 0.55}
+  llm.generate: {permission: llm.generate, risk: 0.30, sensitivity: 0.20}
+
+# -----------------------------------------------------------------------------
+# Resource policy (the RESOURCE part of the intersection). Glob patterns,
+# case-insensitive, `*` matches anything. Optional fields:
+#   actions:     restrict the rule to these actions
+#   decision:    block | require_approval | ghost
+#   permission:  extra permission the user+agent must hold
+#   sensitivity: raises the sensitivity used by risk and Privilege Drift
+# -----------------------------------------------------------------------------
+resources:
+  - id: RES-SECRETS
+    pattern: "*credential*"
+    decision: block
+    reason: credential stores are never exposed to agents
+  - id: RES-ENV
+    pattern: "*.env"
+    decision: block
+    reason: environment files contain secrets
+  - id: RES-KEYS
+    pattern: "*id_rsa*"
+    decision: block
+    reason: private keys are never exposed to agents
+  - id: RES-PAYROLL
+    pattern: "*payroll*"
+    permission: customer.export
+    sensitivity: 0.95
+    reason: payroll data requires export-level authority
+  - id: RES-BULK-CUSTOMERS
+    pattern: "customers/*"
+    actions: [customer.read, customer.export, database.query, database.export]
+    decision: require_approval
+    reason: bulk customer access needs a second person
+  - id: RES-UNTRUSTED
+    pattern: "untrusted/*"
+    decision: ghost
+    reason: untrusted content is analysed only inside a Ghost Session
+
+# -----------------------------------------------------------------------------
+# Sessions.
+#   require_registered: true forces POST /v1/sessions (the user-facing app
+#                       fixes the intent; the agent cannot rewrite it)
+#   max_new_per_minute: limits session rotation per user+agent so a runaway
+#                       agent cannot reset its step counter
+#   drift_window_seconds: Privilege Drift memory across sessions
+# -----------------------------------------------------------------------------
+sessions:
+  require_registered: false
+  ttl_seconds: 3600
+  max_new_per_minute: 20
+  drift_window_seconds: 900
+
+# -----------------------------------------------------------------------------
+# Ghost Session: isolated, read-only execution for elevated-risk actions.
+# Only allowed_actions can run inside it; everything else is refused.
+# -----------------------------------------------------------------------------
+ghost:
+  enabled: true
+  ttl_seconds: 300
+  allowed_tools: [read_document, search_documents]
+  allowed_actions: [reports.read, documents.read, repository.analyze]
+
+# Optional externally managed signature feed (YAML in the threat-feed format).
+# Pulled every refresh_seconds over https; invalid downloads are rejected and
+# the last good remote feed stays active. Remote IDs are prefixed "REMOTE:".
+threat_feed_remote:
+  url: ""
+  refresh_seconds: 300
+
+redaction:
+  language: pl
+  # Reserved: the Polish NER checkpoint has no weights; must stay false.
+  use_model: false
+  model_path: vendor/masqe-model/masqe-ner-v1

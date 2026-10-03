@@ -1,0 +1,33 @@
+services:
+  ai-guard:
+    build: ./ai-guard
+    environment:
+      MASQE_AI_GUARD_HOST: 0.0.0.0
+      MASQE_EXPLAIN_OLLAMA_URL: http://host.docker.internal:11434
+      MASQE_EXPLAIN_MODEL: gemma3:4b
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health')"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
+  gateway:
+    build: .
+    ports: ["8080:8080"]
+    environment:
+      MASQE_AI_GUARD_URL: http://ai-guard:8090
+      MASQE_ADDR: 0.0.0.0:8080
+      MASQE_OLLAMA_URL: http://host.docker.internal:11434
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - ./policies:/app/policies:ro
+      - masqe-data:/app/data
+    depends_on:
+      ai-guard:
+        condition: service_healthy
+
+volumes:
+  masqe-data:

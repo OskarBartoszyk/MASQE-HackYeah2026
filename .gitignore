@@ -1,0 +1,12 @@
+/data/
+/bin/
+/.cache/
+*.db
+*.db-shm
+*.db-wal
+__pycache__/
+.pytest_cache/
+.DS_Store
+/vendor/masqe-model/
+/dashboard/node_modules/
+.venv/
