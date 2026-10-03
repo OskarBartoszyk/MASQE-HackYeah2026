@@ -30,6 +30,8 @@ type Store struct {
 	sessions    map[string]*SessionState
 	principals  map[string][]stepRecord
 	newSessions map[string][]time.Time
+	subsMu      sync.Mutex
+	subs        map[chan string]struct{}
 }
 type BudgetScope struct {
 	Subject string
@@ -47,14 +49,15 @@ func OpenStore(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{db: db, sessions: map[string]*SessionState{}, principals: map[string][]stepRecord{}, newSessions: map[string][]time.Time{}}
+	s := &Store{db: db, sessions: map[string]*SessionState{}, principals: map[string][]stepRecord{}, newSessions: map[string][]time.Time{}, subs: map[chan string]struct{}{}}
 	db.SetMaxOpenConns(1)
 	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS audit_events (id TEXT PRIMARY KEY, timestamp TEXT, user_id TEXT, role TEXT, agent TEXT, action TEXT, resource TEXT, decision TEXT, reasons TEXT, policy_version TEXT, risk REAL, semantic TEXT, tokens INTEGER, cost_usd REAL, latency_ms REAL, session_id TEXT, gateway_ms REAL DEFAULT 0, deterministic_ms REAL DEFAULT 0, semantic_ms REAL DEFAULT 0, semantic_escalated INTEGER DEFAULT 0, execution_status TEXT DEFAULT 'VERDICT_ONLY', actual_tokens INTEGER DEFAULT 0, approved_by TEXT DEFAULT '', explanation TEXT DEFAULT '{}', model TEXT DEFAULT '', controls TEXT DEFAULT '[]')`,
+		`CREATE TABLE IF NOT EXISTS audit_events (id TEXT PRIMARY KEY, timestamp TEXT, user_id TEXT, role TEXT, agent TEXT, action TEXT, resource TEXT, decision TEXT, reasons TEXT, policy_version TEXT, risk REAL, semantic TEXT, tokens INTEGER, cost_usd REAL, latency_ms REAL, session_id TEXT, gateway_ms REAL DEFAULT 0, deterministic_ms REAL DEFAULT 0, semantic_ms REAL DEFAULT 0, semantic_escalated INTEGER DEFAULT 0, execution_status TEXT DEFAULT 'VERDICT_ONLY', actual_tokens INTEGER DEFAULT 0, approved_by TEXT DEFAULT '', explanation TEXT DEFAULT '{}', model TEXT DEFAULT '', controls TEXT DEFAULT '[]', trace TEXT DEFAULT '[]')`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_events(timestamp DESC)`,
 		`CREATE TABLE IF NOT EXISTS usage_daily (day TEXT, subject TEXT, tokens INTEGER NOT NULL DEFAULT 0, cost_usd REAL NOT NULL DEFAULT 0, PRIMARY KEY(day,subject))`,
 		`CREATE TABLE IF NOT EXISTS request_window (subject TEXT, timestamp INTEGER)`,
 		`CREATE INDEX IF NOT EXISTS idx_window ON request_window(subject, timestamp)`,
+		`CREATE TABLE IF NOT EXISTS incident_state (id TEXT PRIMARY KEY, status TEXT NOT NULL, note TEXT DEFAULT '', updated_by TEXT DEFAULT '', updated_at TEXT)`,
 		`CREATE TABLE IF NOT EXISTS approvals (id TEXT PRIMARY KEY, request_id TEXT, status TEXT, created_at TEXT, context TEXT)`,
 		`CREATE TABLE IF NOT EXISTS demo_customers (id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL, status TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS demo_memory (owner TEXT, key TEXT, value TEXT, PRIMARY KEY(owner,key))`,
@@ -77,6 +80,7 @@ func OpenStore(path string) (*Store, error) {
 		`ALTER TABLE audit_events ADD COLUMN explanation TEXT DEFAULT '{}'`,
 		`ALTER TABLE audit_events ADD COLUMN model TEXT DEFAULT ''`,
 		`ALTER TABLE audit_events ADD COLUMN controls TEXT DEFAULT '[]'`,
+		`ALTER TABLE audit_events ADD COLUMN trace TEXT DEFAULT '[]'`,
 	} {
 		_, _ = db.Exec(migration)
 	}
@@ -86,6 +90,54 @@ func OpenStore(path string) (*Store, error) {
 	return s, nil
 }
 func (s *Store) Close() error { return s.db.Close() }
+
+// Subscribe receives the id of every audit event that is written or updated.
+// Slow subscribers miss notifications instead of blocking the gateway.
+func (s *Store) Subscribe() (chan string, func()) {
+	ch := make(chan string, 256)
+	s.subsMu.Lock()
+	s.subs[ch] = struct{}{}
+	s.subsMu.Unlock()
+	return ch, func() {
+		s.subsMu.Lock()
+		delete(s.subs, ch)
+		s.subsMu.Unlock()
+	}
+}
+
+func (s *Store) publish(id string) {
+	s.subsMu.Lock()
+	defer s.subsMu.Unlock()
+	for ch := range s.subs {
+		select {
+		case ch <- id:
+		default:
+		}
+	}
+}
+
+// SetIncidentState records the analyst workflow state of an incident.
+func (s *Store) SetIncidentState(id, status, note, by string) error {
+	_, err := s.db.Exec(`INSERT INTO incident_state(id,status,note,updated_by,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,note=excluded.note,updated_by=excluded.updated_by,updated_at=excluded.updated_at`, id, status, note, by, time.Now().UTC().Format(time.RFC3339))
+	return err
+}
+
+func (s *Store) IncidentStates() (map[string][3]string, error) {
+	rows, err := s.db.Query(`SELECT id,status,note,updated_by FROM incident_state`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][3]string{}
+	for rows.Next() {
+		var id, status, note, by string
+		if err := rows.Scan(&id, &status, &note, &by); err != nil {
+			return nil, err
+		}
+		out[id] = [3]string{status, note, by}
+	}
+	return out, rows.Err()
+}
 
 func durationOr(seconds int, fallback time.Duration) time.Duration {
 	if seconds > 0 {
@@ -357,14 +409,54 @@ func (s *Store) AddAudit(e AuditEvent) error {
 		e.Controls = []string{}
 	}
 	ctl, _ := json.Marshal(e.Controls)
+	trace, _ := json.Marshal(e.Trace)
 	if e.ExecutionStatus == "" {
 		e.ExecutionStatus = "VERDICT_ONLY"
 	}
-	_, err := s.db.Exec(`INSERT INTO audit_events(id,timestamp,user_id,role,agent,action,resource,decision,reasons,policy_version,risk,semantic,tokens,cost_usd,latency_ms,session_id,gateway_ms,deterministic_ms,semantic_ms,semantic_escalated,explanation,execution_status,model,controls) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, e.ID, e.Timestamp, e.User, e.Role, e.Agent, e.Action, e.Resource, string(e.Decision), string(r), e.PolicyVersion, e.Risk, string(sem), e.Tokens, e.CostUSD, e.LatencyMS, e.SessionID, e.GatewayMS, e.DeterministicMS, e.SemanticMS, e.SemanticEscalated, string(xai), e.ExecutionStatus, e.Model, string(ctl))
+	_, err := s.db.Exec(`INSERT INTO audit_events(id,timestamp,user_id,role,agent,action,resource,decision,reasons,policy_version,risk,semantic,tokens,cost_usd,latency_ms,session_id,gateway_ms,deterministic_ms,semantic_ms,semantic_escalated,explanation,execution_status,model,controls,trace) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, e.ID, e.Timestamp, e.User, e.Role, e.Agent, e.Action, e.Resource, string(e.Decision), string(r), e.PolicyVersion, e.Risk, string(sem), e.Tokens, e.CostUSD, e.LatencyMS, e.SessionID, e.GatewayMS, e.DeterministicMS, e.SemanticMS, e.SemanticEscalated, string(xai), e.ExecutionStatus, e.Model, string(ctl), string(trace))
+	if err == nil {
+		s.publish(e.ID)
+	}
 	return err
 }
 func (s *Store) UpdateExecution(id, status string, actualTokens int, approver string) error {
 	_, err := s.db.Exec(`UPDATE audit_events SET execution_status=?,actual_tokens=?,approved_by=? WHERE id=?`, status, actualTokens, approver, id)
+	if err == nil {
+		s.publish(id)
+	}
+	return err
+}
+
+// AnnotateAudit adds reasons and controls found after the verdict and can
+// re-label the stored decision (e.g. an attack captured inside Ghost Shell).
+func (s *Store) AnnotateAudit(id, decision string, reasons, controls []string) error {
+	var rawReasons, rawControls string
+	if err := s.db.QueryRow(`SELECT reasons,controls FROM audit_events WHERE id=?`, id).Scan(&rawReasons, &rawControls); err != nil {
+		return err
+	}
+	var rs, cs []string
+	_ = json.Unmarshal([]byte(rawReasons), &rs)
+	_ = json.Unmarshal([]byte(rawControls), &cs)
+	if len(reasons) > 0 {
+		kept := []string{}
+		for _, r := range rs {
+			if r != "policy checks passed" {
+				kept = append(kept, r)
+			}
+		}
+		rs = uniqueSorted(append(kept, reasons...))
+	}
+	rb, _ := json.Marshal(rs)
+	cb, _ := json.Marshal(uniqueSorted(append(cs, controls...)))
+	var err error
+	if decision != "" {
+		_, err = s.db.Exec(`UPDATE audit_events SET reasons=?,controls=?,decision=? WHERE id=?`, string(rb), string(cb), decision, id)
+	} else {
+		_, err = s.db.Exec(`UPDATE audit_events SET reasons=?,controls=? WHERE id=?`, string(rb), string(cb), id)
+	}
+	if err == nil {
+		s.publish(id)
+	}
 	return err
 }
 
@@ -387,6 +479,9 @@ func (s *Store) AddControls(id string, extra []string) error {
 func (s *Store) UpdateExplanation(id string, ex Explanation) error {
 	b, _ := json.Marshal(ex)
 	_, err := s.db.Exec(`UPDATE audit_events SET explanation=? WHERE id=?`, string(b), id)
+	if err == nil {
+		s.publish(id)
+	}
 	return err
 }
 
@@ -397,7 +492,7 @@ type AuditFilter struct {
 	Since    string
 }
 
-const auditColumns = `id,timestamp,user_id,role,agent,action,resource,decision,reasons,policy_version,risk,semantic,tokens,cost_usd,latency_ms,session_id,gateway_ms,deterministic_ms,semantic_ms,semantic_escalated,execution_status,actual_tokens,approved_by,explanation,model,controls`
+const auditColumns = `id,timestamp,user_id,role,agent,action,resource,decision,reasons,policy_version,risk,semantic,tokens,cost_usd,latency_ms,session_id,gateway_ms,deterministic_ms,semantic_ms,semantic_escalated,execution_status,actual_tokens,approved_by,explanation,model,controls,trace`
 
 func (s *Store) Audits(f AuditFilter) ([]AuditEvent, error) {
 	if f.Limit <= 0 || f.Limit > 5000 {
@@ -438,8 +533,8 @@ type scanner interface{ Scan(...any) error }
 
 func scanAudit(row scanner) (AuditEvent, error) {
 	var e AuditEvent
-	var d, rs, sem, xai, ctl string
-	if err := row.Scan(&e.ID, &e.Timestamp, &e.User, &e.Role, &e.Agent, &e.Action, &e.Resource, &d, &rs, &e.PolicyVersion, &e.Risk, &sem, &e.Tokens, &e.CostUSD, &e.LatencyMS, &e.SessionID, &e.GatewayMS, &e.DeterministicMS, &e.SemanticMS, &e.SemanticEscalated, &e.ExecutionStatus, &e.ActualTokens, &e.ApprovedBy, &xai, &e.Model, &ctl); err != nil {
+	var d, rs, sem, xai, ctl, trace string
+	if err := row.Scan(&e.ID, &e.Timestamp, &e.User, &e.Role, &e.Agent, &e.Action, &e.Resource, &d, &rs, &e.PolicyVersion, &e.Risk, &sem, &e.Tokens, &e.CostUSD, &e.LatencyMS, &e.SessionID, &e.GatewayMS, &e.DeterministicMS, &e.SemanticMS, &e.SemanticEscalated, &e.ExecutionStatus, &e.ActualTokens, &e.ApprovedBy, &xai, &e.Model, &ctl, &trace); err != nil {
 		return e, err
 	}
 	e.Decision = Decision(d)
@@ -447,6 +542,7 @@ func scanAudit(row scanner) (AuditEvent, error) {
 	_ = json.Unmarshal([]byte(sem), &e.Semantic)
 	_ = json.Unmarshal([]byte(xai), &e.Explanation)
 	_ = json.Unmarshal([]byte(ctl), &e.Controls)
+	_ = json.Unmarshal([]byte(trace), &e.Trace)
 	if e.Controls == nil {
 		e.Controls = []string{}
 	}

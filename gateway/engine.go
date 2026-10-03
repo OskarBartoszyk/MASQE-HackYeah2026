@@ -96,11 +96,13 @@ func (e *Engine) Evaluate(ctx context.Context, req EvaluateRequest) (EvaluateRes
 	}
 	sensitivity := action.Sensitivity
 	var resourceDecision string
+	var resourceNotes []string
 	for _, rule := range matchResources(p.Resources, req.Action, req.Resource) {
 		label := rule.ID
 		if label == "" {
 			label = rule.Pattern
 		}
+		resourceNotes = append(resourceNotes, label)
 		if rule.Sensitivity > sensitivity {
 			sensitivity = rule.Sensitivity
 		}
@@ -132,6 +134,7 @@ func (e *Engine) Evaluate(ctx context.Context, req EvaluateRequest) (EvaluateRes
 			deny("session", reason)
 		}
 	}
+	sessionReason := reason
 	req.OriginalIntent = session.OriginalIntent
 	if session.Steps > req.Usage.Steps {
 		req.Usage.Steps = session.Steps
@@ -215,12 +218,21 @@ func (e *Engine) Evaluate(ctx context.Context, req EvaluateRequest) (EvaluateRes
 	if len(redactable) > 0 {
 		resp.RedactedPrompt = RedactText(req.Prompt, redactable)
 	}
-	for _, hit := range MatchThreats([]string{req.Prompt, req.Resource, req.Action, req.OriginalIntent, metadataText(req.Metadata)}, snap.compiled) {
+	threatHits := MatchThreats([]string{req.Prompt, req.Resource, req.Action, req.OriginalIntent, metadataText(req.Metadata)}, snap.compiled)
+	for _, hit := range threatHits {
 		reason := hit.ID + ": threat signature matched"
 		if hit.Severity != "" {
 			reason += " (" + hit.Severity + ")"
 		}
 		act("threat:"+hit.ID, reason, hit.Action)
+	}
+	// Honeytokens planted in Ghost Shell must never travel anywhere else.
+	canaryHits := findCanaries(canaries.snapshot(ctx), req.Prompt, req.Resource, req.OriginalIntent, metadataText(req.Metadata))
+	if len(canaryHits) > 0 {
+		deny("canary", "honeytoken from an isolated Ghost Shell session detected: confirmed exfiltration attempt")
+		if !req.DryRun {
+			reportCanaryUse(canaryHits, "gateway:"+req.Action, req.User.ID, req.Agent.ID)
+		}
 	}
 	memoryScore := 0.0
 	if req.Action == "memory.write" {
@@ -330,6 +342,7 @@ func (e *Engine) Evaluate(ctx context.Context, req EvaluateRequest) (EvaluateRes
 		}
 		resp.scopes = nil
 	}
+	resp.Trace = buildTrace(traceInput{req: req, policy: p, permission: permission, resp: resp, resourceNotes: resourceNotes, sessionReason: sessionReason, steps: session.Steps, budget: budget, secret: secret, pii: pii, redacted: len(redactable), threats: threatHits, signatures: len(snap.compiled), canaries: len(canaryHits), scores: scores, escalated: resp.SemanticEscalated, memoryWrite: req.Action == "memory.write"})
 	resp.Reasons = uniqueSorted(resp.Reasons)
 	if len(resp.Reasons) == 0 {
 		resp.Reasons = []string{"policy checks passed"}
@@ -357,7 +370,7 @@ func (e *Engine) Evaluate(ctx context.Context, req EvaluateRequest) (EvaluateRes
 	if resp.Decision == Block || resp.Decision == Throttle {
 		tokens = 0
 	}
-	event := AuditEvent{ID: req.RequestID, Timestamp: time.Now().UTC().Format(time.RFC3339Nano), User: req.User.ID, Role: req.User.Role, Agent: req.Agent.ID, Model: req.Agent.Model, Action: req.Action, Resource: RedactAll(req.Resource), Decision: resp.Decision, Reasons: resp.Reasons, Controls: sortedKeys(controls), PolicyVersion: resp.PolicyVersion, Risk: resp.Risk, Semantic: resp.Semantic, Tokens: tokens, CostUSD: req.Usage.CostUSD, LatencyMS: resp.Timings.TotalMS, GatewayMS: resp.Timings.GatewayMS, DeterministicMS: resp.Timings.DeterministicMS, SemanticMS: resp.Timings.SemanticMS, SemanticEscalated: resp.SemanticEscalated, SessionID: req.SessionID, ExecutionStatus: executionStatus, Explanation: resp.Explanation}
+	event := AuditEvent{ID: req.RequestID, Timestamp: time.Now().UTC().Format(time.RFC3339Nano), User: req.User.ID, Role: req.User.Role, Agent: req.Agent.ID, Model: req.Agent.Model, Action: req.Action, Resource: RedactAll(req.Resource), Decision: resp.Decision, Reasons: resp.Reasons, Controls: sortedKeys(controls), PolicyVersion: resp.PolicyVersion, Risk: resp.Risk, Semantic: resp.Semantic, Tokens: tokens, CostUSD: req.Usage.CostUSD, LatencyMS: resp.Timings.TotalMS, GatewayMS: resp.Timings.GatewayMS, DeterministicMS: resp.Timings.DeterministicMS, SemanticMS: resp.Timings.SemanticMS, SemanticEscalated: resp.SemanticEscalated, SessionID: req.SessionID, ExecutionStatus: executionStatus, Explanation: resp.Explanation, Trace: resp.Trace}
 	if resp.Decision == Block || resp.Decision == Throttle {
 		event.CostUSD = 0
 	}

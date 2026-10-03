@@ -5,6 +5,10 @@ services:
       MASQE_AI_GUARD_HOST: 0.0.0.0
       MASQE_EXPLAIN_OLLAMA_URL: http://host.docker.internal:11434
       MASQE_EXPLAIN_MODEL: gemma3:4b
+      MASQE_INTERNAL_KEY: ${MASQE_INTERNAL_KEY:-local-demo-internal-key}
+      MASQE_GHOST_DB: /app/data/ghost.db
+    volumes:
+      - ghost-data:/app/data
     extra_hosts:
       - host.docker.internal:host-gateway
     healthcheck:
@@ -18,6 +22,7 @@ services:
     ports: ["8080:8080"]
     environment:
       MASQE_AI_GUARD_URL: http://ai-guard:8090
+      MASQE_INTERNAL_KEY: ${MASQE_INTERNAL_KEY:-local-demo-internal-key}
       MASQE_ADDR: 0.0.0.0:8080
       MASQE_OLLAMA_URL: http://host.docker.internal:11434
     extra_hosts:
@@ -31,3 +36,4 @@ services:
 
 volumes:
   masqe-data:
+  ghost-data:

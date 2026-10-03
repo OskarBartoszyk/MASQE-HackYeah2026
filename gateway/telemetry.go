@@ -30,13 +30,19 @@ type TelemetryInput struct {
 	ConfigError      string
 	SemanticDegraded bool
 	PendingApprovals int
+	// GhostIncidents24h counts confirmed Ghost Shell / honeytoken incidents.
+	GhostIncidents24h int
+	// Range is the reporting window: 15m, 1h, 24h (default) or 7d.
+	Range string
 }
 
 // Telemetry aggregates management and security-team metrics from the audit
 // log and today's budget ledger.
 func (s *Store) Telemetry(in TelemetryInput) (map[string]any, error) {
 	p := in.Policy
-	rows, err := s.db.Query(`SELECT decision,COUNT(*) FROM audit_events GROUP BY decision`)
+	window := ParseRange(in.Range)
+	from := time.Now().Add(-window.Span).UTC().Format(time.RFC3339Nano)
+	rows, err := s.db.Query(`SELECT decision,COUNT(*) FROM audit_events WHERE timestamp>=? GROUP BY decision`, from)
 	if err != nil {
 		return nil, err
 	}
@@ -56,15 +62,15 @@ func (s *Store) Telemetry(in TelemetryInput) (map[string]any, error) {
 
 	var avg, gateway, deterministic, semantic, cost float64
 	var tokens, escalations int
-	if err := s.db.QueryRow(`SELECT COALESCE(AVG(latency_ms),0),COALESCE(AVG(gateway_ms),0),COALESCE(AVG(deterministic_ms),0),COALESCE(AVG(CASE WHEN semantic_escalated=1 THEN semantic_ms END),0),COALESCE(SUM(tokens),0),COALESCE(SUM(cost_usd),0),COALESCE(SUM(semantic_escalated),0) FROM audit_events`).Scan(&avg, &gateway, &deterministic, &semantic, &tokens, &cost, &escalations); err != nil {
+	if err := s.db.QueryRow(`SELECT COALESCE(AVG(latency_ms),0),COALESCE(AVG(gateway_ms),0),COALESCE(AVG(deterministic_ms),0),COALESCE(AVG(CASE WHEN semantic_escalated=1 THEN semantic_ms END),0),COALESCE(SUM(tokens),0),COALESCE(SUM(cost_usd),0),COALESCE(SUM(semantic_escalated),0) FROM audit_events WHERE timestamp>=?`, from).Scan(&avg, &gateway, &deterministic, &semantic, &tokens, &cost, &escalations); err != nil {
 		return nil, err
 	}
-	latencies, gateways, err := s.recentLatencies(2000)
+	latencies, gateways, err := s.recentLatencies(from, 5000)
 	if err != nil {
 		return nil, err
 	}
 	since := time.Now().Add(-24 * time.Hour).UTC().Format(time.RFC3339Nano)
-	controlCounts, signatureCounts, err := s.controlCounts(since)
+	controlCounts, signatureCounts, err := s.controlCounts(from)
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +88,7 @@ func (s *Store) Telemetry(in TelemetryInput) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	timeline, err := s.timeline(30)
+	timeline, err := s.timeline(window)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +101,7 @@ func (s *Store) Telemetry(in TelemetryInput) (map[string]any, error) {
 	if total > 0 {
 		escalationRate = float64(escalations) / float64(total)
 	}
-	posture, components := securityPosture(in, unapprovedHighRisk)
+	posture, components := securityPosture(in, unapprovedHighRisk+in.GhostIncidents24h)
 	return map[string]any{
 		"requests": total, "decisions": decisions,
 		"average_latency_ms": avg, "average_gateway_ms": gateway, "average_deterministic_ms": deterministic, "average_semantic_ms": semantic,
@@ -105,6 +111,8 @@ func (s *Store) Telemetry(in TelemetryInput) (map[string]any, error) {
 		"semantic_escalation_rate": escalationRate, "deterministic_resolution_rate": 1 - escalationRate,
 		"tokens": tokens, "cost_usd": cost, "daily_tokens": dailyTokens, "daily_cost_usd": dailyCost,
 		"requests_per_second_1m": float64(recent) / 60,
+		"range":                  window.Name, "range_seconds": int(window.Span.Seconds()),
+		"controls_triggered": controlCounts, "threat_signatures": signatureCounts,
 		"controls_triggered_24h": controlCounts, "threat_signatures_24h": signatureCounts,
 		"budgets": budgets, "timeline": timeline,
 		"pending_approvals": in.PendingApprovals, "unapproved_high_risk_executions_24h": unapprovedHighRisk,
@@ -141,7 +149,7 @@ func securityPosture(in TelemetryInput, incidents int) (int, []PostureComponent)
 		{"Tryb ochrony", modePoints, 20, "mode " + in.Policy.Mode},
 		{"Warstwa AI", semPoints, 15, semDetail},
 		{"Konfiguracja", cfgPoints, 10, cfgDetail},
-		{"Incydenty (24h)", incPoints, 15, itoa(incidents) + " high-risk actions executed without approval"},
+		{"Incydenty (24h)", incPoints, 15, itoa(incidents) + " incidents: confirmed exfiltration attempts or high-risk actions without approval"},
 	}
 	score := 0
 	for _, c := range components {
@@ -150,8 +158,8 @@ func securityPosture(in TelemetryInput, incidents int) (int, []PostureComponent)
 	return score, components
 }
 
-func (s *Store) recentLatencies(limit int) ([]float64, []float64, error) {
-	rows, err := s.db.Query(`SELECT latency_ms,gateway_ms FROM audit_events ORDER BY timestamp DESC LIMIT ?`, limit)
+func (s *Store) recentLatencies(from string, limit int) ([]float64, []float64, error) {
+	rows, err := s.db.Query(`SELECT latency_ms,gateway_ms FROM audit_events WHERE timestamp>=? ORDER BY timestamp DESC LIMIT ?`, from, limit)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -266,20 +274,39 @@ type TimelinePoint struct {
 	Blocked    int    `json:"blocked"`
 }
 
-func (s *Store) timeline(minutes int) ([]TimelinePoint, error) {
-	now := time.Now().UTC().Truncate(time.Minute)
-	start := now.Add(-time.Duration(minutes-1) * time.Minute)
+// Range is a reporting window with the bucket size used by its timeline.
+type Range struct {
+	Name    string
+	Span    time.Duration
+	Step    time.Duration
+	Buckets int
+}
+
+// ParseRange accepts 15m, 1h, 24h (default) and 7d.
+func ParseRange(name string) Range {
+	switch name {
+	case "15m":
+		return Range{"15m", 15 * time.Minute, time.Minute, 15}
+	case "1h":
+		return Range{"1h", time.Hour, 2 * time.Minute, 30}
+	case "7d":
+		return Range{"7d", 7 * 24 * time.Hour, 6 * time.Hour, 28}
+	default:
+		return Range{"24h", 24 * time.Hour, time.Hour, 24}
+	}
+}
+
+func (s *Store) timeline(r Range) ([]TimelinePoint, error) {
+	end := time.Now().UTC().Truncate(r.Step).Add(r.Step)
+	start := end.Add(-time.Duration(r.Buckets) * r.Step)
 	rows, err := s.db.Query(`SELECT substr(timestamp,1,16),decision,COUNT(*) FROM audit_events WHERE timestamp>=? GROUP BY 1,2`, start.Format(time.RFC3339))
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	points := make([]TimelinePoint, minutes)
-	index := map[string]int{}
+	points := make([]TimelinePoint, r.Buckets)
 	for i := range points {
-		m := start.Add(time.Duration(i) * time.Minute).Format("2006-01-02T15:04")
-		points[i].Minute = m
-		index[m] = i
+		points[i].Minute = start.Add(time.Duration(i) * r.Step).Format("2006-01-02T15:04")
 	}
 	for rows.Next() {
 		var minute, decision string
@@ -287,8 +314,12 @@ func (s *Store) timeline(minutes int) ([]TimelinePoint, error) {
 		if err := rows.Scan(&minute, &decision, &c); err != nil {
 			return nil, err
 		}
-		i, ok := index[minute]
-		if !ok {
+		t, err := time.Parse("2006-01-02T15:04", minute)
+		if err != nil {
+			continue
+		}
+		i := int(t.Sub(start) / r.Step)
+		if i < 0 || i >= r.Buckets {
 			continue
 		}
 		switch Decision(decision) {

@@ -258,8 +258,8 @@ func TestHotReloadPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := "permissions: [reports.read, documents.read, customer.read, database.query, repository.analyze, llm.generate]"
-	replacement := "permissions: [reports.read, documents.read, customer.read, customer.delete, database.query, repository.analyze, llm.generate]"
+	old := "permissions: [reports.read, documents.read, customer.read, database.query, repository.analyze, llm.generate, shell.exec]"
+	replacement := "permissions: [reports.read, documents.read, customer.read, customer.delete, database.query, repository.analyze, llm.generate, shell.exec]"
 	b = []byte(strings.Replace(string(b), old, replacement, 1))
 	time.Sleep(5 * time.Millisecond)
 	if err = os.WriteFile(policyPath, b, 0o600); err != nil {

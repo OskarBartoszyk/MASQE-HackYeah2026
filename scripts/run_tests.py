@@ -88,7 +88,7 @@ def main() -> int:
         ("Demo agent: autonomous plan → guarded tool → answer", lambda: py_suite("demo-agent", "test_*.py")),
     ]
     if not unit_only:
-        suites.append(("End-to-end: real gateway + real AI Guard over HTTP", lambda: py_suite("tests", "e2e_test.py")))
+        suites.append(("End-to-end: real gateway + AI Guard, OpenAI API, SDK, MCP over HTTP", lambda: py_suite("tests", "e2e_test.py")))
     print(f"\n{BOLD}MASQE SECURITY TEST SUITE{RESET}\n")
     passed = failed = 0
     details = []

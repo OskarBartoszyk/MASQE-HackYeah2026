@@ -18,12 +18,16 @@ import (
 // ExecuteResponse records both the policy verdict and whether a protected
 // operation actually ran. A verdict alone is never treated as execution.
 type ExecuteResponse struct {
+	Shell          map[string]any   `json:"shell,omitempty"`
 	Evaluation     EvaluateResponse `json:"evaluation"`
 	Executed       bool             `json:"executed"`
 	Result         string           `json:"result,omitempty"`
 	ExecutionError string           `json:"execution_error,omitempty"`
 	OutputFindings []string         `json:"output_findings,omitempty"`
-	ActualTokens   int              `json:"actual_tokens,omitempty"`
+	// GhostShellSession is set when an untrusted repository was mounted in an
+	// isolated Ghost Shell; the agent continues there with shell.exec.
+	GhostShellSession string `json:"ghost_shell_session,omitempty"`
+	ActualTokens      int    `json:"actual_tokens,omitempty"`
 }
 
 type PendingAction struct {
@@ -58,6 +62,9 @@ func MeasureUsage(req *EvaluateRequest, p Policy) {
 }
 
 func (s *ExecutionService) Execute(ctx context.Context, req EvaluateRequest) (ExecuteResponse, error) {
+	if req.Action == "shell.exec" {
+		return s.executeShell(ctx, req)
+	}
 	snap, err := s.Engine.Config.Snapshot()
 	if err != nil {
 		return ExecuteResponse{}, err
@@ -234,6 +241,20 @@ func (s *ExecutionService) run(ctx context.Context, req EvaluateRequest, ev Eval
 	// personal data or secret was found, whatever the decision was.
 	if ev.RedactedPrompt != "" {
 		req.Prompt = ev.RedactedPrompt
+		// Chat requests carry several messages; each is redacted the same way.
+		msgs := make([]ChatMessage, len(req.Messages))
+		for i, m := range req.Messages {
+			msgs[i] = ChatMessage{Role: m.Role, Content: redactForPolicy(m.Content, p)}
+		}
+		req.Messages = msgs
+	}
+	if req.Action == "repository.analyze" && ev.Decision == Ghost {
+		if id := s.openGhostShell(ctx, req, p); id != "" {
+			resp.Executed = true
+			resp.GhostShellSession = id
+			resp.Result = "Repository mounted read-only in Ghost Shell session " + id + " at /repo (no host execution, no network, synthetic credentials). Continue with action shell.exec and session_id " + id + "."
+			return resp, nil
+		}
 	}
 	output, tokens, err := s.runTool(ctx, req, p, ev.Decision == Ghost)
 	if err != nil {
@@ -249,6 +270,18 @@ func (s *ExecutionService) run(ctx context.Context, req EvaluateRequest, ev Eval
 		_ = s.Engine.Store.Adjust(ev.scopes, delta, cost)
 	}
 	return s.guardOutput(ctx, req, resp, output, p)
+}
+
+// redactForPolicy masks the findings of enabled PII/secret controls.
+func redactForPolicy(text string, p Policy) string {
+	text = Canonicalize(text)
+	var keep []Finding
+	for _, f := range ScanSensitive(text) {
+		if (isSecretKind(f.Kind) && p.Security.Secrets.Enabled) || (!isSecretKind(f.Kind) && p.Security.PII.Enabled) {
+			keep = append(keep, f)
+		}
+	}
+	return RedactText(text, keep)
 }
 
 // guardOutput inspects every result before it reaches the agent: secrets,
@@ -280,6 +313,12 @@ func (s *ExecutionService) guardOutput(ctx context.Context, req EvaluateRequest,
 			resp.ExecutionError = "output secret blocked"
 			return resp, nil
 		}
+	}
+	if hits := findCanaries(canaries.snapshot(ctx), output); len(hits) > 0 {
+		resp.OutputFindings = append(resp.OutputFindings, "canary")
+		resp.ExecutionError = "output withheld: honeytoken from an isolated session"
+		reportCanaryUse(hits, "output:"+req.Action, req.User.ID, req.Agent.ID)
+		return resp, nil
 	}
 	for _, hit := range MatchThreats([]string{output}, snap.compiled) {
 		resp.OutputFindings = append(resp.OutputFindings, "threat:"+hit.ID)
@@ -395,40 +434,93 @@ func (s *ExecutionService) runTool(ctx context.Context, req EvaluateRequest, p P
 }
 
 func (s *ExecutionService) callModel(ctx context.Context, req EvaluateRequest, provider ModelProvider) (string, int, error) {
-	if provider.Kind != "ollama" {
-		return "", 0, errors.New("configured model is not an Ollama provider")
+	messages := req.Messages
+	if len(messages) == 0 {
+		messages = []ChatMessage{{Role: "user", Content: req.Prompt}}
 	}
-	endpoint := provider.URL
-	if override := os.Getenv("MASQE_OLLAMA_URL"); override != "" {
-		endpoint = override
+	switch provider.Kind {
+	case "mock":
+		// Deterministic offline model so every flow works without Ollama.
+		last := messages[len(messages)-1].Content
+		words := len(strings.Fields(last))
+		return fmt.Sprintf("[demo-local] Draft answer prepared from a %d-word request. Connect Ollama or an OpenAI-compatible provider for real generation.", words), maxInt(1, (len(last)+3)/4) + 24, nil
+	case "ollama":
+		endpoint := provider.URL
+		if override := os.Getenv("MASQE_OLLAMA_URL"); override != "" {
+			endpoint = override
+		}
+		if err := localModelURL(endpoint); err != nil {
+			return "", 0, err
+		}
+		body, _ := json.Marshal(map[string]any{"model": firstNonEmpty(provider.Model, req.Agent.Model), "messages": messages, "stream": false, "options": map[string]any{"num_predict": maxInt(1, provider.MaxOutputTokens)}})
+		var result struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+			PromptTokens int `json:"prompt_eval_count"`
+			OutputTokens int `json:"eval_count"`
+		}
+		if err := s.postJSON(ctx, strings.TrimSuffix(endpoint, "/")+"/api/chat", "", body, &result); err != nil {
+			return "", 0, err
+		}
+		return result.Message.Content, result.PromptTokens + result.OutputTokens, nil
+	case "openai":
+		// Any OpenAI-compatible commercial or self-hosted API. The key is read
+		// from the environment, never from policy.yaml; usage is billed with
+		// cost_per_1k_tokens against the same budgets as local models.
+		if err := providerURL(provider); err != nil {
+			return "", 0, err
+		}
+		key := ""
+		if provider.APIKeyEnv != "" {
+			key = os.Getenv(provider.APIKeyEnv)
+			if key == "" {
+				return "", 0, fmt.Errorf("provider API key %s is not set", provider.APIKeyEnv)
+			}
+		}
+		body, _ := json.Marshal(map[string]any{"model": firstNonEmpty(provider.Model, req.Agent.Model), "messages": messages, "max_tokens": maxInt(1, provider.MaxOutputTokens)})
+		var result struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			} `json:"choices"`
+			Usage struct {
+				Total int `json:"total_tokens"`
+			} `json:"usage"`
+		}
+		if err := s.postJSON(ctx, strings.TrimSuffix(provider.URL, "/")+"/chat/completions", key, body, &result); err != nil {
+			return "", 0, err
+		}
+		if len(result.Choices) == 0 {
+			return "", 0, errors.New("provider returned no choices")
+		}
+		return result.Choices[0].Message.Content, result.Usage.Total, nil
+	default:
+		return "", 0, fmt.Errorf("unsupported model provider kind %q", provider.Kind)
 	}
-	if err := localModelURL(endpoint); err != nil {
-		return "", 0, err
-	}
-	body, _ := json.Marshal(map[string]any{"model": req.Agent.Model, "prompt": req.Prompt, "stream": false, "options": map[string]any{"num_predict": maxInt(1, provider.MaxOutputTokens)}})
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(endpoint, "/")+"/api/generate", bytes.NewReader(body))
+}
+
+func (s *ExecutionService) postJSON(ctx context.Context, url, bearer string, body []byte, out any) error {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return "", 0, err
+		return err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if bearer != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+bearer)
+	}
 	response, err := s.client.Do(httpReq)
 	if err != nil {
-		return "", 0, err
+		return err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != 200 {
-		return "", 0, fmt.Errorf("local model returned HTTP %d", response.StatusCode)
+		return fmt.Errorf("model provider returned HTTP %d", response.StatusCode)
 	}
-	var result struct {
-		Response     string `json:"response"`
-		PromptTokens int    `json:"prompt_eval_count"`
-		OutputTokens int    `json:"eval_count"`
-	}
-	if err = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&result); err != nil {
-		return "", 0, err
-	}
-	return result.Response, result.PromptTokens + result.OutputTokens, nil
+	return json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(out)
 }
+
 func maxInt(a, b int) int {
 	if a > b {
 		return a

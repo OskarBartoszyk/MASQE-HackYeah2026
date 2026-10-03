@@ -146,7 +146,7 @@ func TestModelReceivesRedactedInputAndFiltersOutput(t *testing.T) {
 	s.Execution.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		b, _ := io.ReadAll(r.Body)
 		received = string(b)
-		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"response":"Contact anna@example.pl","prompt_eval_count":12,"eval_count":4}`)), Header: make(http.Header)}, nil
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"message":{"role":"assistant","content":"Contact anna@example.pl"},"prompt_eval_count":12,"eval_count":4}`)), Header: make(http.Header)}, nil
 	})}
 	req := baseRequest()
 	req.User = Principal{}
@@ -159,7 +159,7 @@ func TestModelReceivesRedactedInputAndFiltersOutput(t *testing.T) {
 	if code != 200 || out.Evaluation.Decision != Redact || !out.Executed || out.ActualTokens != 16 {
 		t.Fatalf("model interception failed: %d %+v", code, out)
 	}
-	if strings.Contains(received, "jan@example.pl") || strings.Contains(out.Result, "anna@example.pl") {
+	if strings.Contains(received, "jan@example.pl") || strings.Contains(out.Result, "anna@example.pl") || !strings.Contains(out.Result, "[REDACTED:EMAIL]") {
 		t.Fatalf("PII leaked: input=%s output=%s", received, out.Result)
 	}
 }

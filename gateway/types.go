@@ -44,9 +44,16 @@ type EvaluateRequest struct {
 	OriginalIntent string            `json:"original_intent,omitempty"`
 	Usage          Usage             `json:"usage"`
 	Metadata       map[string]string `json:"metadata,omitempty"`
+	// Messages carries an OpenAI-style conversation for llm.generate.
+	Messages []ChatMessage `json:"-"`
 	// DryRun marks verdict-only evaluation: no step is counted, no session is
 	// created and no executable approval is opened.
 	DryRun bool `json:"-"`
+}
+
+type ChatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 type SemanticScores struct {
@@ -92,6 +99,8 @@ type EvaluateResponse struct {
 	Timings              Timings        `json:"timings"`
 	Explanation          Explanation    `json:"explanation"`
 	Warnings             []string       `json:"warnings,omitempty"`
+	Trace                []TraceStep    `json:"trace,omitempty"`
+	DetailsHidden        bool           `json:"details_hidden,omitempty"`
 
 	scopes   []BudgetScope
 	reserved Usage
@@ -135,6 +144,18 @@ type AuditEvent struct {
 	ActualTokens      int            `json:"actual_tokens,omitempty"`
 	ApprovedBy        string         `json:"approved_by,omitempty"`
 	Explanation       Explanation    `json:"explanation"`
+	Trace             []TraceStep    `json:"trace,omitempty"`
+	DetailsHidden     bool           `json:"details_hidden,omitempty"`
+}
+
+// TraceStep is one check of the decision pipeline, shown in the event drawer.
+// Result is pass, flag (acted but not decisive), fail (decisive) or skip.
+type TraceStep struct {
+	Check     string   `json:"check"`
+	Result    string   `json:"result"`
+	Detail    string   `json:"detail,omitempty"`
+	Score     *float64 `json:"score,omitempty"`
+	Threshold *float64 `json:"threshold,omitempty"`
 }
 
 type SessionState struct {

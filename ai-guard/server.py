@@ -15,12 +15,14 @@ import math
 import os
 import re
 import sys
+import hmac
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from model import predict
 from explain import explain
+from ghost import GhostError, ghost_dispatch, start_retention_worker
 
 # --- Attack vocabulary --------------------------------------------------------
 # Exact phrases (kept for explainable signals) ...
@@ -345,7 +347,7 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, {"status": "ok", "backend": "ollama" if os.getenv("OLLAMA_URL") else "offline"})
 
     def do_POST(self) -> None:
-        if self.path not in ("/analyze", "/explain"):
+        if self.path not in ("/analyze", "/explain", "/ghost"):
             self._json(404, {"error": "not found"})
             return
         try:
@@ -356,6 +358,16 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length))
             if not isinstance(payload, dict):
                 raise TypeError("payload must be an object")
+            if self.path == "/ghost":
+                key = os.getenv("MASQE_INTERNAL_KEY", "")
+                if not key or not hmac.compare_digest(self.headers.get("X-MASQE-Internal", ""), key):
+                    self._json(403, {"error": "internal authentication required"})
+                    return
+                try:
+                    self._json(200, ghost_dispatch(payload))
+                except GhostError as exc:
+                    self._json(exc.status, {"error": str(exc)})
+                return
             if self.path == "/explain":
                 try:
                     self._json(200, explain(payload))
@@ -386,6 +398,7 @@ def main() -> None:
     host = os.getenv("MASQE_AI_GUARD_HOST", "127.0.0.1")
     port = int(os.getenv("MASQE_AI_GUARD_PORT", "8090"))
     predict("warm up")  # train once at start-up, not on the first request
+    start_retention_worker()
     print(f"MASQE AI Guard listening on http://{host}:{port}", file=sys.stderr)
     ThreadingHTTPServer((host, port), Handler).serve_forever()
 

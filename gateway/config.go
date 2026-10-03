@@ -157,8 +157,14 @@ type Policy struct {
 	ThreatFeedRemote  RemoteFeedPolicy             `yaml:"threat_feed_remote" json:"threat_feed_remote"`
 }
 type ModelProvider struct {
-	Kind            string  `yaml:"kind" json:"kind"`
-	URL             string  `yaml:"url" json:"url"`
+	// Kind: mock (offline demo), ollama (local) or openai (any
+	// OpenAI-compatible API, commercial or self-hosted).
+	Kind string `yaml:"kind" json:"kind"`
+	URL  string `yaml:"url" json:"url"`
+	// Model is the upstream model id when it differs from the policy name.
+	Model string `yaml:"model" json:"model,omitempty"`
+	// APIKeyEnv names the environment variable holding the provider key.
+	APIKeyEnv       string  `yaml:"api_key_env" json:"api_key_env,omitempty"`
 	CostPer1KTokens float64 `yaml:"cost_per_1k_tokens" json:"cost_per_1k_tokens"`
 	MaxOutputTokens int     `yaml:"max_output_tokens" json:"max_output_tokens"`
 }
@@ -325,7 +331,7 @@ func (m *ConfigManager) fail(err error, pm, tm time.Time) {
 var validControlActions = map[string]bool{"block": true, "redact": true, "require_approval": true, "ghost": true, "throttle": true, "log": true}
 var validThreatActions = map[string]bool{"block": true, "require_approval": true, "ghost": true, "throttle": true, "log": true}
 var validResourceDecisions = map[string]bool{"": true, "block": true, "require_approval": true, "ghost": true}
-var validConsole = map[string]bool{"telemetry.read": true, "policy.read": true, "audit.read_own": true, "audit.read_all": true, "audit.export": true}
+var validConsole = map[string]bool{"telemetry.read": true, "policy.read": true, "policy.read_full": true, "decision.details": true, "audit.read_own": true, "audit.read_all": true, "audit.export": true}
 
 func inUnit(v float64) bool { return v >= 0 && v <= 1 }
 
@@ -427,10 +433,21 @@ func validatePolicy(p Policy) error {
 		return fmt.Errorf("budget_alerts.warn_at must be lower than throttle_at")
 	}
 	for name, mp := range p.ModelProviders {
-		if mp.Kind == "ollama" {
+		switch mp.Kind {
+		case "mock":
+		case "ollama":
 			if err := localModelURL(mp.URL); err != nil {
 				return fmt.Errorf("model_providers.%s: %w", name, err)
 			}
+		case "openai":
+			if err := providerURL(mp); err != nil {
+				return fmt.Errorf("model_providers.%s: %w", name, err)
+			}
+		default:
+			return fmt.Errorf("model_providers.%s.kind %q is invalid (use mock, ollama or openai)", name, mp.Kind)
+		}
+		if mp.CostPer1KTokens < 0 || mp.MaxOutputTokens < 0 {
+			return fmt.Errorf("model_providers.%s must not contain negative values", name)
 		}
 	}
 	if p.Ghost.TTLSeconds < 0 || p.Sessions.TTLSeconds < 0 || p.Sessions.MaxNewPerMinute < 0 || p.Sessions.DriftWindowSeconds < 0 {
@@ -508,6 +525,21 @@ func applyStrictness(p Policy) Policy {
 		p.Risk = profile.Risk
 	}
 	return p
+}
+
+// providerURL accepts https endpoints and plain http only on a local host.
+func providerURL(mp ModelProvider) error {
+	u, err := url.Parse(mp.URL)
+	if err != nil || u.Host == "" || u.User != nil {
+		return fmt.Errorf("provider url must be an absolute https URL")
+	}
+	if u.Scheme == "https" {
+		return nil
+	}
+	if u.Scheme == "http" && localModelURL(mp.URL) == nil {
+		return nil
+	}
+	return fmt.Errorf("provider url must use https (http only for a local host)")
 }
 
 func localModelURL(raw string) error {

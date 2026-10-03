@@ -45,6 +45,20 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/telemetry", s.auth("telemetry.read", s.telemetry))
 	mux.HandleFunc("GET /v1/policy", s.auth("policy.read", s.policy))
 	mux.HandleFunc("GET /v1/me", s.auth("", s.me))
+	mux.HandleFunc("GET /v1/stream", s.auth("audit.read_own", s.stream))
+	mux.HandleFunc("GET /v1/incidents", s.auth("audit.read_own", s.incidents))
+	mux.HandleFunc("POST /v1/incidents/{id}/status", s.auth("audit.read_all", s.incidentStatus))
+	// Integration surfaces: OpenAI-compatible proxy and SDK tool guarding.
+	mux.HandleFunc("POST /v1/chat/completions", s.auth("", s.chatCompletions))
+	mux.HandleFunc("GET /v1/models", s.auth("", s.models))
+	mux.HandleFunc("POST /v1/authorize", s.auth("", s.authorize))
+	mux.HandleFunc("POST /v1/outputs", s.auth("", s.outputs))
+	mux.HandleFunc("POST /v1/ghost/sessions", s.auth("", s.ghostSession))
+	mux.HandleFunc("GET /v1/ghost/sessions", s.auth("audit.read_own", s.ghostSession))
+	mux.HandleFunc("GET /v1/ghost/sessions/{id}", s.auth("audit.read_own", s.ghostSession))
+	mux.HandleFunc("POST /v1/ghost/sessions/{id}/terminate", s.auth("audit.read_own", s.ghostSession))
+	mux.HandleFunc("POST /v1/ghost/sessions/{id}/explain", s.auth("audit.read_own", s.ghostSession))
+	mux.HandleFunc("POST /v1/ghost/sessions/{id}/step", s.auth("", s.ghostAgentStep))
 	if s.DashboardDir != "" {
 		mux.Handle("/", http.FileServer(http.Dir(s.DashboardDir)))
 	}
@@ -60,7 +74,8 @@ func consolePermissions(p Policy, role string) []string {
 		out = append(out, "audit.read_all")
 	}
 	if contains(out, "audit.read_all") {
-		out = append(out, "audit.read_own")
+		// Security staff see detector scores, thresholds and signature regexes.
+		out = append(out, "audit.read_own", "decision.details", "policy.read_full")
 	}
 	return uniqueSorted(out)
 }
@@ -126,6 +141,9 @@ func (s *Server) evaluate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, err.Error())
 		return
 	}
+	if !s.canSee(r, "decision.details") {
+		resp = publicEvaluation(resp)
+	}
 	writeJSON(w, 200, resp)
 }
 
@@ -153,10 +171,10 @@ func (s *Server) execute(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.Execution.Execute(r.Context(), req)
 	if err != nil {
-		writeError(w, 500, err.Error())
+		writeError(w, statusOf(err, 500), err.Error())
 		return
 	}
-	writeJSON(w, 200, result)
+	writeJSON(w, 200, s.publicExecute(r, result))
 }
 
 // openSession registers the user's original intent before an agent acts, so
@@ -199,7 +217,7 @@ func (s *Server) approve(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 403, err.Error())
 		return
 	}
-	writeJSON(w, 200, result)
+	writeJSON(w, 200, s.publicExecute(r, result))
 }
 
 // health is public; it reports liveness and whether the last config edit was
@@ -244,7 +262,7 @@ func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
 	if contains(consolePermissions(snap.Policy, identityFrom(r.Context()).Role), "audit.read_all") {
 		scope = "all"
 	}
-	writeJSON(w, 200, map[string]any{"events": events, "scope": scope})
+	writeJSON(w, 200, map[string]any{"events": s.publicEvents(r, events), "scope": scope})
 }
 
 func (s *Server) event(w http.ResponseWriter, r *http.Request) {
@@ -259,25 +277,62 @@ func (s *Server) event(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "event not found")
 		return
 	}
-	writeJSON(w, 200, e)
+	writeJSON(w, 200, s.publicEvents(r, []AuditEvent{e})[0])
 }
 
 func (s *Server) telemetry(w http.ResponseWriter, r *http.Request) {
 	snap, _ := s.Engine.Config.Snapshot()
-	m, err := s.Engine.Store.Telemetry(TelemetryInput{Policy: applyStrictness(snap.Policy), ConfigError: snap.Error, SemanticDegraded: s.Engine.SemanticDegraded(), PendingApprovals: s.Execution.PendingCount()})
+	// Ghost Shell statistics are organisation-wide aggregates (no content), so
+	// every role sees the same posture.
+	ctx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
+	defer cancel()
+	stats := ghostStats(ctx)
+	m, err := s.Engine.Store.Telemetry(TelemetryInput{Policy: applyStrictness(snap.Policy), ConfigError: snap.Error, SemanticDegraded: s.Engine.SemanticDegraded(), PendingApprovals: s.Execution.PendingCount(), GhostIncidents24h: stats.Incidents24h, Range: r.URL.Query().Get("range")})
 	if err != nil {
 		writeError(w, 500, err.Error())
 		return
 	}
+	m["ghost_shell"] = map[string]any{"available": stats.Available, "active_sessions": stats.Active, "incidents": stats.Incidents, "incidents_24h": stats.Incidents24h, "canary_hits": stats.CanaryHits}
 	writeJSON(w, 200, m)
+}
+
+type GhostStats struct {
+	Available                                   bool
+	Active, Incidents, Incidents24h, CanaryHits int
+	Sessions                                    []map[string]any
+}
+
+func ghostStats(ctx context.Context) GhostStats {
+	out := GhostStats{}
+	result, code, err := ghostCall(ctx, map[string]any{"op": "list", "owner": "__gateway__", "security": true})
+	if err != nil || code != 200 {
+		return out
+	}
+	out.Available = true
+	since := float64(time.Now().Add(-24 * time.Hour).Unix())
+	list, _ := result["sessions"].([]any)
+	for _, raw := range list {
+		item, _ := raw.(map[string]any)
+		out.Sessions = append(out.Sessions, item)
+		if item["status"] == "active" {
+			out.Active++
+		}
+		if inc, ok := item["incident"].(map[string]any); ok {
+			out.Incidents++
+			if numberOf(inc["opened_at"]) >= since {
+				out.Incidents24h++
+			}
+		}
+		out.CanaryHits += int(numberOf(item["canary_hits"]))
+	}
+	return out
 }
 func (s *Server) policy(w http.ResponseWriter, r *http.Request) {
 	snap, _ := s.Engine.Config.Snapshot()
-	publicPolicy := applyStrictness(snap.Policy)
-	// API credentials belong in server configuration, never in a dashboard
-	// response that every authenticated role can inspect.
-	publicPolicy.Clients = nil
-	writeJSON(w, 200, map[string]any{"policy": publicPolicy, "threat_feed": snap.Threats, "hash": snap.Hash, "reloaded_at": snap.ReloadedAt, "config_error": snap.Error, "config_error_at": snap.ErrorAt, "remote_feed": snap.RemoteFeed})
+	// API credentials never leave the server; thresholds and signature regexes
+	// only for roles with policy.read_full.
+	visible, feed := publicPolicy(applyStrictness(snap.Policy), snap.Threats, s.canSee(r, "policy.read_full"))
+	writeJSON(w, 200, map[string]any{"policy": visible, "threat_feed": feed, "full": s.canSee(r, "policy.read_full"), "hash": snap.Hash, "reloaded_at": snap.ReloadedAt, "config_error": snap.Error, "config_error_at": snap.ErrorAt, "remote_feed": snap.RemoteFeed})
 }
 
 // csvSafe neutralises spreadsheet formulas (CSV injection) in exported cells.

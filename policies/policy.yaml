@@ -40,8 +40,18 @@ allowed_models:
   - demo-local
   - gemma3:4b
 
-# Provider used by llm.generate. Ollama URLs must point to a local host.
-# cost_per_1k_tokens lets the same budget logic cover paid APIs.
+# Provider used by llm.generate and /v1/chat/completions.
+#   kind: mock    offline deterministic model (works without Ollama)
+#   kind: ollama  local model; url must point to a local host
+#   kind: openai  any OpenAI-compatible API (OpenAI, Azure, vLLM, LM Studio...)
+#                 url must be https (plain http only on localhost); the key is
+#                 read from the environment variable named in api_key_env,
+#                 never stored here; model = upstream model id.
+# cost_per_1k_tokens bills paid APIs against the same budgets as local models;
+# actual usage reported by the provider is reconciled after each call.
+# Example (add "gpt-4o-mini" to allowed_models and export OPENAI_API_KEY):
+#   gpt-4o-mini: {kind: openai, url: 'https://api.openai.com/v1', model: gpt-4o-mini,
+#                 api_key_env: OPENAI_API_KEY, cost_per_1k_tokens: 0.0006, max_output_tokens: 256}
 model_providers:
   demo-local: {kind: mock, cost_per_1k_tokens: 0, max_output_tokens: 128}
   gemma3:4b: {kind: ollama, url: 'http://127.0.0.1:11434', cost_per_1k_tokens: 0, max_output_tokens: 128}
@@ -163,26 +173,31 @@ model_budgets:
 # Roles (Discord-style permission tags).
 #   permissions: what the user may let an agent do on their behalf.
 #   console:     reporting access: telemetry.read, policy.read,
-#                audit.read_own, audit.read_all, audit.export
+#                audit.read_own, audit.read_all, audit.export,
+#                decision.details (detector scores, thresholds, signature IDs),
+#                policy.read_full (thresholds and signature regexes).
+#                audit.read_all implies decision.details and policy.read_full.
+#                Other roles get the decision and an actionable reason only,
+#                so nobody can tune an attack just below a threshold.
 # -----------------------------------------------------------------------------
 roles:
   viewer:
     permissions: [reports.read, documents.read]
     console: [telemetry.read, policy.read, audit.read_own]
   analyst:
-    permissions: [reports.read, documents.read, customer.read, database.query, repository.analyze, llm.generate]
+    permissions: [reports.read, documents.read, customer.read, database.query, repository.analyze, llm.generate, shell.exec]
     console: [telemetry.read, policy.read, audit.read_own]
   support:
     permissions: [customer.read, customer.update, email.send, memory.read, memory.write]
     console: [telemetry.read, policy.read, audit.read_own]
   developer:
-    permissions: [reports.read, documents.read, database.query, repository.analyze, api.external.call, memory.read, memory.write, llm.generate]
+    permissions: [reports.read, documents.read, database.query, repository.analyze, api.external.call, memory.read, memory.write, llm.generate, shell.exec]
     console: [telemetry.read, policy.read, audit.read_own]
   admin:
-    permissions: [reports.read, documents.read, customer.read, customer.update, customer.delete, customer.export, database.query, database.export, repository.analyze, api.external.call, email.send, memory.read, memory.write, llm.generate]
+    permissions: [reports.read, documents.read, customer.read, customer.update, customer.delete, customer.export, database.query, database.export, repository.analyze, api.external.call, email.send, memory.read, memory.write, llm.generate, shell.exec]
     console: [telemetry.read, policy.read, audit.read_all, audit.export]
   security:
-    permissions: [reports.read, documents.read, customer.read, customer.delete, repository.analyze, llm.generate]
+    permissions: [reports.read, documents.read, customer.read, customer.delete, repository.analyze, llm.generate, shell.exec]
     console: [telemetry.read, policy.read, audit.read_all, audit.export]
 
 # -----------------------------------------------------------------------------
@@ -191,7 +206,7 @@ roles:
 # -----------------------------------------------------------------------------
 agents:
   corporate-agent:
-    permissions: [reports.read, documents.read, customer.read, customer.update, customer.delete, customer.export, database.query, database.export, repository.analyze, api.external.call, email.send, memory.read, memory.write, llm.generate]
+    permissions: [reports.read, documents.read, customer.read, customer.update, customer.delete, customer.export, database.query, database.export, repository.analyze, api.external.call, email.send, memory.read, memory.write, llm.generate, shell.exec]
     allowed_tools: [get_customer, update_customer, delete_customer, read_document, search_documents, send_email, query_database, memory_read, memory_write, call_external_api]
     limits:
       daily_tokens: 50000
@@ -206,6 +221,9 @@ agents:
 # whether a second person must approve. Unknown actions are BLOCKED.
 # -----------------------------------------------------------------------------
 actions:
+  # Explicit virtual terminal. Never delegates to an operating-system shell.
+  # Risk reflects the capability (a terminal), not the emulator's safety.
+  shell.exec: {permission: shell.exec, risk: 0.45, sensitivity: 0.40}
   reports.read: {permission: reports.read, risk: 0.08, sensitivity: 0.15}
   documents.read: {permission: documents.read, risk: 0.10, sensitivity: 0.20}
   customer.read: {permission: customer.read, risk: 0.18, sensitivity: 0.35}
@@ -277,7 +295,8 @@ sessions:
 # -----------------------------------------------------------------------------
 ghost:
   enabled: true
-  ttl_seconds: 300
+  # Also bounds Ghost Shell lifetime; recorder retention is 72 hours.
+  ttl_seconds: 900
   allowed_tools: [read_document, search_documents]
   allowed_actions: [reports.read, documents.read, repository.analyze]
 

@@ -62,6 +62,8 @@ def _build_model_prompt(payload: dict[str, Any]) -> str:
             for name in ("prompt_injection", "data_exfiltration", "intent_alignment", "privilege_drift")
         },
     }
+    if payload.get("action") == "shell.exec" and isinstance(payload.get("ghost_facts"), list):
+        evidence["potwierdzone_fakty_z_silnika"] = [sanitize(fact) for fact in payload["ghost_facts"][:6]]
     return (
         "Wyjaśnij gotową decyzję MASQE osobie bez wiedzy informatycznej. Nie zmieniaj decyzji. "
         "Napisz po polsku konkretnie o tej sytuacji, bez angielskich nazw mechanizmów. "
