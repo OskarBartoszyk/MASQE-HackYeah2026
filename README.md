@@ -1,7 +1,5 @@
 # MASQE — zero-trust runtime security gateway for Agentic AI
 
-> **AI decides what it wants to do. MASQE decides what it is allowed to do.**
-
 MASQE sits between users, agents and everything an agent can touch: LLMs
 (local or commercial), tools, databases, e-mail, memory, documents, MCP
 servers and code. The agent proposes an action; MASQE verifies identity,
@@ -20,15 +18,28 @@ Decisions: `ALLOW`, `REDACT`, `GHOST`, `REQUIRE_APPROVAL`, `THROTTLE`, `BLOCK`.
 | Reporting | real-time console (live event stream, incidents workflow, decision trace, budgets, latency percentiles), **tamper-evident audit log** (HMAC hash chain, verified in the console), CSV/JSON audit export |
 | Self-testing | `make test` — positive and negative tests across Go, Python, the demo agent, and end-to-end flows against the real services |
 
-This is a hackathon prototype: the demo tools use isolated SQLite fixtures and
-a mock outbox; models run locally via Ollama or through any OpenAI-compatible
-API; Ghost Shell is data-level isolation (an emulator), not an OS sandbox.
-
 ## Architecture
+
+### System overview
 
 ![MASQE architecture: clients, Go gateway, Python security services, policy, and reporting](docs/architecture.jpg)
 
 Editable vector source: [`docs/architecture.svg`](docs/architecture.svg).
+
+### Developer architecture
+
+The diagram below maps the implementation: process boundaries, source modules,
+HTTP endpoints, SDK/MCP integration, model connections and persistent storage.
+Boxes inside a process are modules, not separate services.
+
+![MASQE developer architecture: entry points, Go gateway modules, Python AI Guard endpoints, model providers, configuration and SQLite stores](docs/developer-architecture.jpg)
+
+Open the [full-resolution JPG](docs/developer-architecture.jpg) or the
+[zoomable SVG](docs/developer-architecture.svg).
+The [developer architecture guide](docs/developer-architecture.md) includes the
+complete source layout, connection table, request flows and state lifecycle.
+
+### Runtime behavior
 
 * **Go decides, Python scores.** The AI Guard returns bounded scores; only the
   gateway issues decisions. If it is unavailable, requests that need semantic
@@ -422,47 +433,3 @@ than the user who runs it.
 | Cascading failures | fail-closed semantic layer, last-valid-policy snapshot, bounded async explainer |
 
 The table is a control mapping, not a claim of certification.
-
-## Security review fixes
-
-Two red-team passes found and fixed:
-
-* **First pass:** session-id rotation resetting runaway and drift limits; raw
-  PII reaching tools when a decision escalated above REDACT; typos in policy
-  actions silently disabling controls; viewers draining shared budgets with
-  denied or forged-usage requests; injection paraphrases skipping the semantic
-  layer; lexical Intent Lock (bypass by stuffing the goal's words, false blocks
-  across languages); missing detectors (AWS/GitHub keys, private keys,
-  `wget|sh`, `os.system`, unsafe YAML/joblib, base64, zero-width characters);
-  CSV formula injection; audit readable by every role; LLM explanation time
-  counted as gateway latency; broken YAML taking the gateway offline;
-  `max_steps` above 21 never firing; thresholds in `security:` ignored; disabled
-  controls still blocking; threat-feed `action` ignored.
-* **Second pass (Ghost Shell and reporting):** honeytokens pasted inline into a
-  shell command were rejected instead of recorded (the incident was missed);
-  honeytokens leaving through e-mail/API/prompts were not recognised; attacks in
-  the shell appeared as `ALLOW` with no signatures in reporting; the posture
-  score stayed 100/100 with open critical incidents; detector scores,
-  thresholds and signature regexes were readable by every role (an oracle for
-  tuning attacks); foreign Ghost sessions returned `500` without an audit trail;
-  `shell.exec` had the lowest risk in the system; an SDK authorization could be
-  consumed by another user.
-
-Each has a regression test (`gateway/security_test.go`,
-`gateway/ghost_security_test.go`, `gateway/integration_test.go`,
-`ai-guard/test_*.py`, `tests/e2e_test.py`).
-
-## Privacy and model note
-
-Audit records exclude prompt content and detected values; personal data in
-resource names is masked. They store actor, action, resource, decision,
-reasons, triggered controls, policy version, scores, usage and latency.
-
-The semantic classifier is a small offline model (TF-IDF + logistic
-regression) trained at start-up from English and Polish examples, combined
-with explicit patterns. It is a demonstrator, not a benchmarked production
-detector. Personal data is detected by the fine-tuned Polish HerBERT model
-(PLVeil, run locally by the AI Guard) together with checksum-validated rules;
-`redaction.on_model_failure` decides whether a missing model falls back to rules
-or blocks.
-

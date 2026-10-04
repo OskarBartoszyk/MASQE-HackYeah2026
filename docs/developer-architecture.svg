@@ -1,0 +1,197 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2800" height="2670" viewBox="0 0 2800 2670">
+  <title>MASQE — developer architecture</title>
+  <desc>Implementation map with clients, Go gateway, Python AI Guard, exact HTTP endpoints, configuration, two SQLite stores and model providers. Process interiors are code modules, not microservices.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#496963"/></marker>
+    <marker id="blueArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#5677a1"/></marker>
+    <style>
+      text { font-family: Arial, Helvetica, sans-serif; fill: #193831; }
+      .eyebrow { font-size: 23px; font-weight: 700; letter-spacing: 4px; fill: #52736a; }
+      .title { font-size: 64px; font-weight: 700; letter-spacing: -2px; }
+      .subtitle { font-size: 28px; fill: #526960; }
+      .heading { font-size: 33px; font-weight: 700; }
+      .body { font-size: 27px; }
+      .small { font-size: 24px; fill: #526960; }
+      .mono { font-family: Menlo, Consolas, monospace; font-size: 24px; fill: #41655a; }
+      .tag { font-size: 22px; font-weight: 700; letter-spacing: 1px; }
+      .panel { fill: #ffffff; stroke: #c5d1c8; stroke-width: 2; }
+      .module { fill: #ffffff; stroke: #cbd7ce; stroke-width: 2; }
+      .edge { fill: none; stroke: #496963; stroke-width: 3; marker-end: url(#arrow); }
+      .async { fill: none; stroke: #5677a1; stroke-width: 3; stroke-dasharray: 10 8; marker-end: url(#blueArrow); }
+      .line { fill: none; stroke: #496963; stroke-width: 3; }
+      .white { fill: #ffffff; }
+    </style>
+  </defs>
+  <rect width="2800" height="2670" fill="#f5f5ee"/>
+  <rect x="80" y="64" width="13" height="115" rx="6" fill="#246d55"/>
+  <text x="122" y="89" class="eyebrow">MASQE / ENGINEERING MAP</text>
+  <text x="120" y="158" class="title">One control plane. Explicit execution boundaries.</text>
+  <text x="80" y="204" class="subtitle">Source modules · transports · request paths · model inference · state ownership</text>
+
+  <!-- Client-side processes. -->
+  <rect x="80" y="255" width="820" height="230" rx="18" class="panel"/>
+  <text x="112" y="299" class="eyebrow">01 / BROWSER</text>
+  <text x="112" y="344" class="heading">React console</text>
+  <text x="112" y="386" class="mono">dashboard/src/ · React + Vite</text>
+  <text x="112" y="426" class="body">REST /v1/* + live SSE /v1/stream</text>
+  <text x="112" y="462" class="small">Built assets: dashboard/dist → Go serves GET /</text>
+
+  <rect x="990" y="255" width="820" height="230" rx="18" class="panel"/>
+  <text x="1022" y="299" class="eyebrow">02 / API CLIENTS</text>
+  <text x="1022" y="344" class="heading">Applications + demo agent</text>
+  <text x="1022" y="386" class="mono">demo-agent/agent.py · HTTP / JSON</text>
+  <text x="1022" y="426" class="body">/v1/sessions → /v1/execute</text>
+  <text x="1022" y="462" class="small">OpenAI-compatible clients → /v1/chat/completions</text>
+
+  <rect x="1900" y="255" width="820" height="230" rx="18" class="panel"/>
+  <text x="1932" y="299" class="eyebrow">03 / TOOL INTEGRATION</text>
+  <text x="1932" y="344" class="heading">Python SDK + MCP wrapper</text>
+  <text x="1932" y="386" class="mono">sdk/python/masqe_{sdk,mcp}.py</text>
+  <text x="1932" y="426" class="body">authorize → caller-side tool → outputs check</text>
+  <text x="1932" y="462" class="small">MCP: JSON-RPC / stdio to upstream subprocess</text>
+
+  <path d="M490 485V522H2310V485" class="line"/>
+  <path d="M1400 485V522" class="line"/>
+  <path d="M740 522V580" class="edge"/>
+  <rect x="1000" y="505" width="1150" height="42" rx="12" fill="#f5f5ee"/>
+  <text x="1020" y="535" class="small">HTTP / JSON · Bearer key or X-MASQE-Key · responses return to caller</text>
+
+  <!-- Main process boundaries. -->
+  <rect x="80" y="580" width="1320" height="1100" rx="22" fill="#e5eee5" stroke="#9ab4a3" stroke-width="2"/>
+  <rect x="1630" y="580" width="1090" height="1100" rx="22" fill="#e9eef4" stroke="#a7b9cc" stroke-width="2"/>
+  <text x="120" y="634" class="heading">Go gateway</text>
+  <text x="1360" y="632" text-anchor="end" class="tag">:8080 · net/http</text>
+  <text x="120" y="670" class="mono">cmd/masqe/main.go → gateway/</text>
+  <text x="1670" y="634" class="heading">Python AI Guard</text>
+  <text x="2680" y="632" text-anchor="end" class="tag">:8090</text>
+  <text x="1670" y="670" class="mono">ai-guard/server.py · ThreadingHTTPServer</text>
+
+  <!-- Go process internals. -->
+  <rect x="120" y="704" width="1240" height="160" rx="13" class="module"/>
+  <text x="148" y="745" class="heading">HTTP routing + identity binding</text>
+  <text x="148" y="783" class="mono">server.go · integration.go · disclosure.go</text>
+  <text x="148" y="822" class="body">Key → user / role / assigned agents; role-filtered API responses</text>
+  <text x="148" y="851" class="small">/evaluate (dry run) · /execute · /authorize · /outputs · /chat/completions</text>
+
+  <path d="M740 864V909" class="edge"/>
+  <rect x="120" y="915" width="1240" height="228" rx="13" class="module"/>
+  <text x="148" y="960" class="heading">Policy engine + input controls</text>
+  <text x="148" y="1000" class="mono">engine.go · guards.go · semantic.go · ner.go · trace.go</text>
+  <text x="148" y="1043" class="body">Identity ∩ agent ∩ resource · intent / drift · signatures · budgets</text>
+  <text x="148" y="1083" class="body">Rules + concurrent PII scan + conditional semantic analysis</text>
+  <text x="148" y="1120" class="small">Verdict: ALLOW / REDACT / GHOST / REQUIRE_APPROVAL / THROTTLE / BLOCK</text>
+
+  <path d="M740 1143V1190" class="edge"/>
+  <rect x="120" y="1196" width="1240" height="206" rx="13" class="module"/>
+  <text x="148" y="1240" class="heading">Execution + approval + output checks</text>
+  <text x="148" y="1280" class="mono">execution.go · integration.go · ghost_shell.go</text>
+  <text x="148" y="1321" class="body">Built-in tools / model dispatch · shell.exec → Ghost bridge</text>
+  <text x="148" y="1360" class="body">Inspect returned content before release; account actual usage</text>
+  <text x="148" y="1389" class="small">SDK grants are single-use; SDK / MCP tools run in the caller process.</text>
+
+  <path d="M740 1402V1449" class="edge"/>
+  <rect x="120" y="1455" width="1240" height="181" rx="13" class="module"/>
+  <text x="148" y="1499" class="heading">Audit + reporting + asynchronous explanation jobs</text>
+  <text x="148" y="1538" class="mono">store.go · audit_chain.go · live.go · telemetry.go</text>
+  <text x="148" y="1578" class="body">Events / incidents / approvals / usage → REST + SSE + exports</text>
+  <text x="148" y="1614" class="small">explanation_client.go → Python; explanation updates the stored event</text>
+
+  <!-- Python modules and actual endpoint boundaries. -->
+  <rect x="1670" y="704" width="1010" height="160" rx="13" class="module"/>
+  <text x="1698" y="746" class="heading">POST /analyze</text>
+  <text x="1698" y="785" class="mono">server.py + model.py · scikit-learn</text>
+  <text x="1698" y="823" class="body">TF-IDF / logistic regression + EN / PL patterns</text>
+  <text x="1698" y="853" class="small">Injection, exfiltration, intent, drift; optional Ollama scoring</text>
+
+  <rect x="1670" y="915" width="1010" height="228" rx="13" class="module"/>
+  <text x="1698" y="960" class="heading">POST /redact</text>
+  <text x="1698" y="1000" class="mono">ner_service.py → masqe_engine/</text>
+  <text x="1698" y="1043" class="body">Transformers / PyTorch → local PLVeil HerBERT</text>
+  <text x="1698" y="1083" class="body">Entity spans + rules → redacted content / findings</text>
+  <text x="1698" y="1120" class="small">Model weights from Hugging Face cache; inference stays local</text>
+
+  <rect x="1670" y="1196" width="1010" height="206" rx="13" class="module"/>
+  <text x="1698" y="1240" class="heading">POST /ghost</text>
+  <text x="1698" y="1280" class="mono">ghost.py · deterministic shell interpreter</text>
+  <text x="1698" y="1321" class="body">Virtual files / cwd · honeytokens · captured outbound data</text>
+  <text x="1698" y="1360" class="body">SHA-256 event chain · persisted sessions · optional planner</text>
+  <text x="1698" y="1389" class="small">Agent shell commands do not execute on the host or network.</text>
+
+  <rect x="1670" y="1455" width="1010" height="181" rx="13" class="module"/>
+  <text x="1698" y="1499" class="heading">POST /explain</text>
+  <text x="1698" y="1538" class="mono">explain.py → Ollama /api/generate</text>
+  <text x="1698" y="1578" class="body">Plain-language explanation after the gateway verdict</text>
+  <text x="1698" y="1614" class="small">The language model explains; it does not grant permission.</text>
+
+  <!-- Service calls. Arrow direction is request direction; responses return. -->
+  <path d="M1360 970H1480V786H1670" class="edge"/>
+  <text x="1498" y="762" class="tag">/analyze</text>
+  <path d="M1360 1060H1670" class="edge"/>
+  <text x="1430" y="1039" class="tag">/redact</text>
+  <path d="M1360 1270H1670" class="edge"/>
+  <text x="1440" y="1248" class="tag">/ghost</text>
+  <text x="1422" y="1307" class="small">internal key</text>
+  <path d="M1360 1534H1670" class="async"/>
+  <text x="1425" y="1510" class="tag">/explain</text>
+  <text x="1407" y="1570" class="small">async · JSON</text>
+
+  <!-- State ownership: links are intentionally separate from model calls. -->
+  <text x="80" y="1750" class="eyebrow">CONFIGURATION + PERSISTENT STATE</text>
+  <path d="M400 1810V1680" class="edge"/>
+  <path d="M1060 1680V1810" class="edge"/>
+  <path d="M2180 1680V1810" class="edge"/>
+  <rect x="80" y="1810" width="600" height="360" rx="17" class="panel"/>
+  <text x="112" y="1858" class="heading">YAML configuration</text>
+  <text x="112" y="1903" class="mono">policies/policy.yaml</text>
+  <text x="112" y="1941" class="mono">policies/threat-feed.yaml</text>
+  <text x="112" y="1987" class="body">config.go · yaml.v3</text>
+  <text x="112" y="2027" class="body">Snapshot-time file reload</text>
+  <text x="112" y="2067" class="body">Optional remote HTTPS feed</text>
+  <text x="112" y="2110" class="small">Validated → last valid snapshot</text>
+  <text x="112" y="2144" class="small">Compose: read-only policy mount</text>
+
+  <rect x="730" y="1810" width="670" height="360" rx="17" class="panel"/>
+  <text x="762" y="1858" class="heading">Gateway SQLite</text>
+  <text x="762" y="1903" class="mono">data/masqe.db · go-sqlite3 / CGO</text>
+  <text x="762" y="1947" class="body">audit_events + audit_chain</text>
+  <text x="762" y="1987" class="body">usage_daily + request_window</text>
+  <text x="762" y="2027" class="body">incident_state + approvals</text>
+  <text x="762" y="2067" class="body">demo_customers / memory / outbox</text>
+  <text x="762" y="2110" class="small">HMAC-SHA256 · external audit key</text>
+  <text x="762" y="2144" class="small">Compose volume: masqe-data</text>
+
+  <rect x="1630" y="1810" width="1090" height="360" rx="17" class="panel"/>
+  <text x="1662" y="1858" class="heading">Ghost Shell SQLite</text>
+  <text x="1662" y="1903" class="mono">data/ghost.db · Python sqlite3</text>
+  <text x="1662" y="1947" class="body">ghost_sessions: owner + creation time + JSON state</text>
+  <text x="1662" y="1987" class="body">Virtual filesystem / working directory / canaries</text>
+  <text x="1662" y="2027" class="body">Command history / responses / outbound captures / chain</text>
+  <text x="1662" y="2067" class="body">Retention worker; no shared database with the Go process</text>
+  <text x="1662" y="2110" class="small">Gateway obtains Ghost evidence and canaries through /ghost.</text>
+  <text x="1662" y="2144" class="small">Compose volume: ghost-data</text>
+
+  <!-- Dedicated model edges routed outside the storage panels. -->
+  <path d="M1360 1380H1470V2405H1400" class="edge"/>
+  <path d="M2680 1590H2770V2405H2720" class="edge"/>
+  <text x="80" y="2250" class="eyebrow">MODEL CONNECTIONS / EXTERNAL TO THE TWO SERVICE PROCESSES</text>
+  <rect x="80" y="2290" width="1320" height="250" rx="17" fill="#193f34"/>
+  <text x="112" y="2338" class="heading white">Gateway → generation provider</text>
+  <text x="112" y="2384" class="body white">Ollama :11434 → HTTP /api/chat</text>
+  <text x="112" y="2425" class="body white">OpenAI-compatible API → HTTP(S) /chat/completions</text>
+  <text x="112" y="2466" class="body white">Policy model_providers + environment credentials / URL overrides</text>
+  <text x="112" y="2510" class="small white">Built-in mock provider needs no network. Real responses pass output controls.</text>
+
+  <rect x="1630" y="2290" width="1090" height="250" rx="17" fill="#294765"/>
+  <text x="1662" y="2338" class="heading white">AI Guard → local Ollama :11434</text>
+  <text x="1662" y="2384" class="body white">HTTP /api/generate · Gemma by default</text>
+  <text x="1662" y="2425" class="body white">Explanation + optional Ghost planner / semantic LLM</text>
+  <text x="1662" y="2466" class="body white">Real inference requests; simulated shell traffic stays virtual</text>
+  <text x="1662" y="2510" class="small white">Can share the same Ollama host as the gateway's generation provider.</text>
+
+  <path d="M80 2590H150" class="edge"/>
+  <text x="172" y="2598" class="small">Call / data dependency</text>
+  <path d="M535 2590H610" class="async"/>
+  <text x="630" y="2598" class="small">Asynchronous explanation</text>
+  <text x="2720" y="2598" text-anchor="end" class="small">Boxes inside a boundary are modules, not separate services.</text>
+  <text x="80" y="2641" class="small">Deployment: gateway → http://ai-guard:8090 in Compose; model host → host.docker.internal:11434. Detailed source tree and lifecycle: developer-architecture.md</text>
+</svg>
