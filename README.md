@@ -39,6 +39,16 @@ Open the [full-resolution JPG](docs/developer-architecture.jpg) or the
 The [developer architecture guide](docs/developer-architecture.md) includes the
 complete source layout, connection table, request flows and state lifecycle.
 
+### Project component map
+
+This diagram shows the connections between the console views, client
+integrations, gateway modules, Python guard services, policy and audit storage.
+
+[![MASQE project component map: console, agent activity graph, SDK and MCP integrations, Go gateway, Python guards, policy and audit](docs/project-component-diagram.png)](docs/project-component-diagram.png)
+
+[Open the full-resolution diagram](docs/project-component-diagram.png) to inspect
+the individual modules and connections.
+
 ### Runtime behavior
 
 * **Go decides, Python scores.** The AI Guard returns bounded scores; only the
