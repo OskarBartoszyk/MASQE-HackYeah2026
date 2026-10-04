@@ -163,3 +163,34 @@ func TestModelReceivesRedactedInputAndFiltersOutput(t *testing.T) {
 		t.Fatalf("PII leaked: input=%s output=%s", received, out.Result)
 	}
 }
+
+func TestExecutionPublishesRunningBeforeProviderCall(t *testing.T) {
+	for _, status := range []int{200, 502} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			e, _ := testEngine(t, SemanticScores{})
+			s := NewServer(e, "")
+			called := false
+			s.Execution.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				called = true
+				var count int
+				if err := e.Store.DB().QueryRow(`SELECT count(*) FROM audit_events WHERE execution_status='RUNNING'`).Scan(&count); err != nil || count != 1 {
+					t.Errorf("provider called without running audit state: count=%d err=%v", count, err)
+				}
+				return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(`{"message":{"content":"Summary complete"},"eval_count":2}`)), Header: make(http.Header)}, nil
+			})}
+			req := baseRequest()
+			req.User = Principal{}
+			req.Agent.Model = "gemma3:4b"
+			req.Action = "llm.generate"
+			req.Resource = "model/gemma3:4b"
+			_, out := callGateway(t, s.Handler(), "demo-key", "/v1/execute", req)
+			if !called {
+				t.Fatal("provider not called")
+			}
+			stored, err := e.Store.AuditByID(out.Evaluation.RequestID)
+			if err != nil || stored.ExecutionStatus == "RUNNING" {
+				t.Fatalf("execution did not reach terminal audit state: %+v %v", stored, err)
+			}
+		})
+	}
+}

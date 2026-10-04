@@ -15,7 +15,7 @@ Decisions: `ALLOW`, `REDACT`, `GHOST`, `REQUIRE_APPROVAL`, `THROTTLE`, `BLOCK`.
 | Hybrid defense | deterministic guards (identity, RBAC, resource policy, PII, secrets, 26 exploit signatures, budgets) + AI guards (injection, exfiltration, Intent Lock, Privilege Drift, memory poisoning, indirect injection in outputs) |
 | Adaptive isolation | **Ghost Shell**: untrusted code runs in an emulated workspace with honeytokens; any attempt to move them is a confirmed incident, in any channel |
 | Central policy | one commented `policies/policy.yaml` + `threat-feed.yaml` (+ optional remote feed), hot reload, invalid edits never fail open |
-| Reporting | real-time console (live event stream, incidents workflow, decision trace, budgets, latency percentiles), **tamper-evident audit log** (HMAC hash chain, verified in the console), CSV/JSON audit export |
+| Reporting | real-time console with an **agent activity graph**, live event stream, incidents workflow, decision trace, budgets and latency percentiles; **tamper-evident audit log** (HMAC hash chain, verified in the console), CSV/JSON audit export |
 | Self-testing | `make test` — positive and negative tests across Go, Python, the demo agent, and end-to-end flows against the real services |
 
 ## Architecture
@@ -194,6 +194,8 @@ python3 demo-agent/agent.py --action customer.delete --key admin-demo-key \
 | Red banner "configuration rejected" | Your last YAML edit is invalid; the banner shows the error. The previous policy keeps working until you fix the file. |
 | AI explanation shows "unavailable" | Ollama is not running or `gemma3:4b` is not pulled. Decisions are unaffected. |
 | Blank dashboard | Rebuild it: `cd dashboard && npm ci && npm run build`. |
+| Agent activity tab is missing | Rebuild the dashboard and reload the page, then open `/#/activity`. For Docker, rebuild with `docker compose up --build -d`. |
+| Actions never show a running state | Restart the gateway with the updated Go code. Older processes only publish the verdict and final result. Very short operations may finish before the browser displays the intermediate state. |
 
 
 ## Integrating MASQE (agent → model, agent → tool, agent → MCP, app → agent)
@@ -259,7 +261,20 @@ The dashboard (served at `/`) is an operations console, not a test form:
   Events; pause/resume), the open-incident queue, approvals waiting for a second
   person, security posture with its components, a decision timeline, triggered
   controls and signatures, budgets and latency percentiles. One time range
-  (15 min / 1 h / 24 h / 7 days) drives every view.
+  (15 min / 1 h / 24 h / 7 days) drives the reporting views.
+* **Agent activity** (`#/activity`) — a live graph of observed actions, grouped
+  by agent, user and session. Select an agent or session, pan and zoom, follow
+  the latest action, or click a node for its decision, controls and full event.
+  The view reads the authorized audit API and SSE stream, reconciles snapshots
+  after disconnects and every 10 seconds, and covers the last 24 hours (up to
+  1,000 events, eight recent sessions, 40 actions per lane). Links show recorded
+  order, not inferred task dependencies. Running, completed, waiting, stopped
+  and emulated actions have distinct states. SDK authorizations remain waiting
+  until the tool reports its output. Running records older than two minutes are
+  marked unconfirmed. The workflow graph presentation is inspired by
+  [Workflow](https://github.com/OskarBartoszyk/Workflow); it uses MASQE events.
+  See the [Agent activity guide](docs/agent-activity.md) for setup, status meanings,
+  data flow and current limits.
 * **Incidents** — one queue for gateway detections (signatures, honeytokens,
   indirect injection, memory poisoning) and Ghost Shell incidents, with an
   analyst workflow (open → in progress → resolved, notes) for the security role.
@@ -274,6 +289,13 @@ The dashboard (served at `/`) is an operations console, not a test form:
   background **traffic generator** of ordinary employees, the **Playground**
   scenarios and a self-checking **jury checklist**. Turn it off and the same
   console is the product view.
+
+![MASQE Agent activity graph with a session and action inspector](docs/agent-activity-preview.png)
+
+To use the graph, open **Agent activity**, select the agent and a session, then
+click a step to inspect it. Keep the same `session_id` across a multi-step agent
+run so its actions appear on one lane. The built-in traffic generator can provide
+live demo activity; the graph always displays gateway records.
 
 ## Ghost Shell — adaptive isolation with honeytokens
 
@@ -320,9 +342,10 @@ console.
 ## Test suite and how to run it
 
 ```bash
-make test         # full suite: Go + Python + demo agent + end-to-end
+make test         # backend/integration suite: Go + Python + demo agent + end-to-end
 make test-unit    # Go + Python + demo agent unit/integration tests
 make test-e2e     # end-to-end tests only
+node --test dashboard/src/activity.test.mjs  # frontend graph mapping tests
 ```
 
 The suite reports its current test count when it runs; the count changes as
@@ -334,21 +357,25 @@ violations, and attempted exfiltration).
 
 | Test layer | What it checks | Command |
 | --- | --- | --- |
-| Go unit and integration | Policy/guard decisions, identity and permissions, budgets, execution, API behavior, audit integrity, telemetry, hot-reload logic | `make test-unit` or `go test ./...` |
+| Go unit and integration | Policy/guard decisions, identity and permissions, budgets, execution (including RUNNING before model dispatch and terminal status after success/failure), API behavior, audit integrity, telemetry, hot-reload logic | `make test-unit` or `go test ./...` |
+| Frontend activity graph | Execution status labels, stale running records, Ghost emulation, session separation by user, chronological ordering, repeated-event updates and time-window filtering | `node --test dashboard/src/activity.test.mjs` |
 | Python AI Guard | English/Polish semantic detection, Intent Lock, explanation failure handling, NER offsets/fallback, Ghost Shell consistency, canaries, and recorder integrity | `make test-unit` or `.venv/bin/python -m unittest discover -s ai-guard -p 'test_*.py' -v` |
 | Demo agent | Agent plan → gateway-authorized tool call → response, including blocked-plan behavior | `make test-unit` or `.venv/bin/python -m unittest discover -s demo-agent -p 'test_*.py' -v` |
 | End to end | Starts the real Go gateway and Python AI Guard on temporary local ports with disposable policy/database files; exercises HTTP, hot policy/feed reload, invalid configuration recovery, dashboard APIs, OpenAI-compatible proxy, SDK, MCP, Ghost Shell, performance telemetry, and fail-closed behavior | `make test-e2e` |
 
 The end-to-end tests include user-like/ad-hoc attack prompts, verify both
 allowed and denied outcomes, and alter a temporary policy and threat feed while
-the services are running. `make test` runs all layers and prints individual
-PASS/FAIL results plus a final summary. Tests do not use the production/demo
+the services are running. `make test` runs the Go, Python, demo-agent and end-to-end
+suites and prints individual PASS/FAIL results plus a final summary. Run the Node
+command above separately for the graph tests; it uses Node's built-in test runner
+and is not currently included in `make test`. Tests do not use the production/demo
 database or mutate the checked-in policy files.
 
 Coverage note: the default suite tests the PII-model interface, offset handling,
 caching, and configured fallback using test doubles; it does not download or
-benchmark the optional HerBERT checkpoint itself. The dashboard has no separate
-browser-automation suite; its production bundle is validated with
+benchmark the optional HerBERT checkpoint itself. The graph has automated data
+mapping tests; browser interactions were checked manually, and there is no separate
+automated browser suite. Its production bundle is validated with
 `cd dashboard && npm run build`, while end-to-end tests exercise the APIs that
 provide its data.
 
@@ -356,6 +383,8 @@ provide its data.
 
 1. **Operations**: posture, live stream, incidents, budgets, latency (switch the
    time range at the top). Turn on the traffic generator in the demo bar.
+   Open **Agent activity**, select an agent and one of its multi-step sessions,
+   and inspect a node to explain its action and security decision.
 2. **Playground**: eight scenarios or any custom prompt; open the event to see
    the decision trace.
 3. As *Admin* delete a customer; as *SecOps* approve it on **Operations**.

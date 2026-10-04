@@ -15,7 +15,7 @@ supplies generation when selected by configuration.
 | --- | --- | --- | --- |
 | Gateway | `cmd/masqe/main.go` | Go, `net/http`, `yaml.v3`, `go-sqlite3` through CGO | Authenticated API, policy decisions, execution, output inspection, audit, budgets and reporting |
 | AI Guard | `ai-guard/server.py` | Python `ThreadingHTTPServer`, scikit-learn, optional Transformers/PyTorch | Semantic analysis, PII detection, explanations and Ghost Shell |
-| Console | `dashboard/src/App.jsx` | React, Vite, browser `fetch` | Operations, events, incidents, Ghost Shell, agents, policy and interactive testing |
+| Console | `dashboard/src/App.jsx` | React, Vite, browser `fetch`, SVG | Operations, live agent activity graph, events, incidents, Ghost Shell, agents, policy and interactive testing |
 | Python SDK | `sdk/python/masqe_sdk.py` | Python, `urllib`, JSON/HTTP | Session registration, guarded execution, local-tool authorization and output checking |
 | MCP wrapper | `sdk/python/masqe_mcp.py` | Python, JSON-RPC over stdio | Built-in guarded tools or proxying an upstream MCP subprocess |
 | Demo agent | `demo-agent/agent.py` | Python, JSON/HTTP | Requests planning and tool execution through the gateway |
@@ -30,6 +30,7 @@ endpoint handlers also share one service process; they are not four containers.
 | --- | --- | --- |
 | Browser → gateway | Same-origin HTTP `GET /`, `/v1/*` | The gateway serves `dashboard/dist`; API requests carry a MASQE key. |
 | Gateway → console | HTTP SSE `GET /v1/stream` | Live updates; the console also fetches event, incident and telemetry views. |
+| Agent activity page → gateway | `GET /v1/audit?limit=1000&since=…` plus `GET /v1/stream` | Authorized 24-hour snapshot and live updates; reconciliation on load, reconnect and every 10 seconds. |
 | Agent / SDK → gateway | JSON `POST /v1/sessions`, `/v1/execute` | Register intent, then propose an action with agent, resource, content and session context. |
 | Interactive evaluator → gateway | JSON `POST /v1/evaluate` | Dry-run policy evaluation, not protected-tool execution. |
 | OpenAI-compatible client → gateway | JSON `POST /v1/chat/completions` | Translates chat into guarded `llm.generate`; response streaming is not supported. |
@@ -70,7 +71,8 @@ gateway endpoints.
 4. The gateway resolves the decision. Blocked or throttled actions do not run.
    Approval-required actions wait for an authorized second user. Allowed,
    redacted or Ghost-routed actions enter their execution path.
-5. `execution.go` dispatches a built-in tool or a configured generation provider.
+5. `execution.go` writes the `RUNNING` execution state through the sealed audit
+   update path, then dispatches a built-in tool or a configured generation provider.
    Built-in customer/memory/email operations use the gateway's fixture tables;
    reports and documents include static fixtures. The external-API fixture is
    a mock response, not a generic outbound HTTP executor.
@@ -102,11 +104,41 @@ An optional Ghost planner makes real requests to local Ollama to select an
 action; the selected command still runs only in the emulator. This is distinct
 from the MCP proxy's real upstream subprocess.
 
+### Live agent activity graph
+
+`execution transition → sealed audit update → SSE / audit snapshot → graph node`
+
+`execution.go` and `ghost_shell.go` record `RUNNING` before their dispatch and
+record the final execution status afterward. `Store.UpdateExecution` publishes
+the request ID after a successful sealed write. `live.go` reads the current
+record, applies ownership and role-based disclosure, and streams it to the client.
+
+`dashboard/src/pages/AgentGraph.jsx` maintains a separate live subscription and
+snapshot refresh cycle. `activity.mjs` merges records by request ID, groups them
+by user, agent and session, orders them chronologically, and maps execution
+status to display labels. React renders interactive nodes; SVG renders links.
+The action inspector exposes the selected record's decision, reasons and controls
+and links to the full event drawer or Ghost Shell session.
+
+The graph shows observed order rather than inferred task dependencies. A verdict
+alone is displayed as a recorded decision; external authorization is displayed
+as awaiting a tool result. Old `RUNNING` records become unconfirmed in the view
+after two minutes from the audit timestamp. Short state transitions may be
+coalesced because the stream reads the latest state of a published request ID.
+
+The view is bounded to the latest 1,000 records over 24 hours, eight recent lanes
+and 40 actions per lane; another loaded session can be selected explicitly.
+No additional backend service or database is introduced. See the
+[Agent activity guide](agent-activity.md) for the data-flow diagram, status table,
+deployment update steps and checks.
+
 ## State ownership and restart behavior
 
 | State | Owner / location | Lifecycle |
 | --- | --- | --- |
 | Audit events and integrity chain | Go; `data/masqe.db`: `audit_events`, `audit_chain` | Persistent. Record-state hashes are linked using HMAC-SHA256. |
+| Graph execution state | Existing `audit_events.execution_status` | Sealed updates include `RUNNING` and final status; an updated gateway process is required to emit the new intermediate state. |
+| Graph view state | Browser; `AgentGraph.jsx` | Selection, pan, zoom and merged event snapshot are in memory; reloading reconstructs the graph from authorized records. |
 | Audit signing key | `MASQE_AUDIT_KEY` or adjacent `data/masqe.db.audit-key` | Outside the database; generated key files use restrictive permissions. |
 | Usage and request windows | Go; `usage_daily`, `request_window` | Persistent accounting and rate-window records. |
 | Incident workflow | Go; `incident_state` | Persistent status, note, actor and update time. |
@@ -170,12 +202,15 @@ MASQE/
 ├── dashboard/
 │   ├── src/App.jsx            # App shell and page routing
 │   ├── src/lib.js             # HTTP client and live stream handling
+│   ├── src/activity.mjs       # Graph status labels, grouping and event merging
+│   ├── src/activity.test.mjs  # Node tests for graph data behavior
 │   ├── src/Identity.jsx       # Identity UI
 │   ├── src/GhostShell.jsx     # Ghost console
 │   ├── src/ui.jsx             # Shared UI components
 │   ├── src/demo.jsx           # Demo helpers
 │   ├── src/pages/             # Operations, Events, Incidents, Agents,
-│   │                          # PolicyPage and Playground
+│   │                          # PolicyPage, Playground and AgentGraph
+│   ├── agent-graph.css        # Interactive graph and action inspector styles
 │   ├── index.html             # Vite entry
 │   ├── *.css                  # Console styles
 │   ├── package.json           # Frontend scripts and dependencies
@@ -197,7 +232,7 @@ MASQE/
 │   ├── dev.sh                 # Local development launcher
 │   ├── run_tests.py           # Combined suite runner
 │   └── tamper_demo.py         # Audit integrity demonstration
-├── docs/                      # Overview and developer architecture assets
+├── docs/                      # Architecture assets, Agent activity guide/preview
 ├── Dockerfile                 # Vite + Go build; gateway runtime image
 ├── docker-compose.yml         # Two services, network and persistent volumes
 ├── Makefile                   # Development, build and test entry points
@@ -230,6 +265,14 @@ reporting, audit integrity and security regressions. `ai-guard/test_*.py` covers
 the classifier, service endpoints, NER and emulator. `demo-agent/test_agent.py`
 covers the agent loop. `tests/e2e_test.py` exercises running services, OpenAI API,
 SDK and MCP integration, plus telemetry assertions.
+
+`dashboard/src/activity.test.mjs` checks graph status interpretation, session
+separation, chronological ordering and event updates. Run it separately with
+`node --test dashboard/src/activity.test.mjs`; the current `make test` runner
+does not invoke Node tests. `TestExecutionPublishesRunningBeforeProviderCall`
+checks the running transition during model dispatch and terminal status after
+success and provider failure. A production frontend build checks that the new
+page and styles compile.
 
 See the [README test instructions](../README.md) for prerequisites, individual
 suite commands and the combined `make test` workflow.

@@ -3,6 +3,7 @@ import React from 'react';
 // An original folded-mask monogram. Kept as geometry, crisp at every size.
 export function Mark() { return <svg className="masqe-mark" viewBox="0 0 48 48" fill="none" aria-label="MASQE"><path d="M5 8h12l7 10 7-10h12v24L24 43 5 32V8Z" fill="currentColor"/><path d="m12 18 12 8 12-8v10l-12 7-12-7V18Z" fill="#171D20"/><path d="m12 10 12 16L36 10" stroke="#171D20" strokeWidth="3"/></svg>; }
 const paths = {
+  activity: <><rect x="2" y="8" width="5" height="7" rx="1"/><rect x="17" y="2" width="5" height="6" rx="1"/><rect x="17" y="16" width="5" height="6" rx="1"/><path d="M7 11.5h5V5h5M12 11.5V19h5"/></>,
   overview: <><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></>,
   ghost: <><path d="m5 7 5 5-5 5M13 17h6"/><rect x="2" y="3" width="20" height="18" rx="3"/></>,
   incidents: <><path d="m12 3 10 18H2L12 3Z"/><path d="M12 9v5m0 3v1"/></>,

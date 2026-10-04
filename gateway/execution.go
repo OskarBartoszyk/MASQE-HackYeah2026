@@ -248,6 +248,11 @@ func (s *ExecutionService) run(ctx context.Context, req EvaluateRequest, ev Eval
 		}
 		req.Messages = msgs
 	}
+	// Publish the actual execution transition for live observers. A verdict by
+	// itself does not mean a tool is running (dry runs and SDK grants differ).
+	if err := s.Engine.Store.UpdateExecution(ev.RequestID, "RUNNING", 0, ""); err != nil {
+		return resp, err
+	}
 	if req.Action == "repository.analyze" && ev.Decision == Ghost {
 		if id := s.openGhostShell(ctx, req, p); id != "" {
 			resp.Executed = true

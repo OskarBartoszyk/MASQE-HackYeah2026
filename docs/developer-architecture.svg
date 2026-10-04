@@ -31,10 +31,10 @@
   <!-- Client-side processes. -->
   <rect x="80" y="255" width="820" height="230" rx="18" class="panel"/>
   <text x="112" y="299" class="eyebrow">01 / BROWSER</text>
-  <text x="112" y="344" class="heading">React console</text>
-  <text x="112" y="386" class="mono">dashboard/src/ · React + Vite</text>
-  <text x="112" y="426" class="body">REST /v1/* + live SSE /v1/stream</text>
-  <text x="112" y="462" class="small">Built assets: dashboard/dist → Go serves GET /</text>
+  <text x="112" y="344" class="heading">React console + agent activity graph</text>
+  <text x="112" y="386" class="mono">React / Vite · AgentGraph.jsx + activity.mjs</text>
+  <text x="112" y="426" class="body">Audit snapshot + SSE → nodes / session lanes</text>
+  <text x="112" y="462" class="small">dashboard/dist served by Go · refresh snapshot every 10 s</text>
 
   <rect x="990" y="255" width="820" height="230" rx="18" class="panel"/>
   <text x="1022" y="299" class="eyebrow">02 / API CLIENTS</text>
@@ -86,14 +86,14 @@
   <text x="148" y="1240" class="heading">Execution + approval + output checks</text>
   <text x="148" y="1280" class="mono">execution.go · integration.go · ghost_shell.go</text>
   <text x="148" y="1321" class="body">Built-in tools / model dispatch · shell.exec → Ghost bridge</text>
-  <text x="148" y="1360" class="body">Inspect returned content before release; account actual usage</text>
+  <text x="148" y="1360" class="body">RUNNING → dispatch → output checks → final audit state</text>
   <text x="148" y="1389" class="small">SDK grants are single-use; SDK / MCP tools run in the caller process.</text>
 
   <path d="M740 1402V1449" class="edge"/>
   <rect x="120" y="1455" width="1240" height="181" rx="13" class="module"/>
   <text x="148" y="1499" class="heading">Audit + reporting + asynchronous explanation jobs</text>
   <text x="148" y="1538" class="mono">store.go · audit_chain.go · live.go · telemetry.go</text>
-  <text x="148" y="1578" class="body">Events / incidents / approvals / usage → REST + SSE + exports</text>
+  <text x="148" y="1578" class="body">Sealed state updates → REST / SSE → graph, events, reports</text>
   <text x="148" y="1614" class="small">explanation_client.go → Python; explanation updates the stored event</text>
 
   <!-- Python modules and actual endpoint boundaries. -->

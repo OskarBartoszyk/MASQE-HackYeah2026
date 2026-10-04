@@ -11,11 +11,14 @@ import { Operations } from './pages/Operations';
 import { Events } from './pages/Events';
 import { Incidents } from './pages/Incidents';
 import { Agents } from './pages/Agents';
+import { AgentGraph } from './pages/AgentGraph';
+import '../agent-graph.css';
 import { PolicyPage } from './pages/PolicyPage';
 import { Playground } from './pages/Playground';
 import { useTrafficGenerator, juryProgress, JuryPanel } from './demo';
 
 const PAGES = {
+  activity: ['Agent activity', 'Follow agent actions, security decisions and execution live.'],
   operations: ['Operations center', 'Live gateway decisions, incidents and resources.'],
   incidents: ['Incidents', 'Confirmed attacks and evidence for the security team to handle.'],
   events: ['Event log', 'Every decision with its full control trace.'],
@@ -24,7 +27,7 @@ const PAGES = {
   policy: ['Policy', 'Active control configuration and threat feed.'],
   playground: ['Playground', 'Send any agent request and see the decision.'],
 };
-const NAV = [['operations', 'Operations'], ['incidents', 'Incidents'], ['events', 'Events'], ['ghost', 'Ghost Shell'], ['agents', 'Agents & resources'], ['policy', 'Policy']];
+const NAV = [['operations', 'Operations'], ['activity', 'Agent activity'], ['incidents', 'Incidents'], ['events', 'Events'], ['ghost', 'Ghost Shell'], ['agents', 'Agents & resources'], ['policy', 'Policy']];
 
 function initialPage() {
   const h = (window.location.hash || '').replace('#/', '').split('?')[0];
@@ -156,7 +159,7 @@ function App() {
             {chip('Ghost', data.ghost_shell?.available ? 'ok' : 'warn', 'Ghost Shell')}
             {chip(stream === 'live' ? 'Live' : stream === 'connecting' ? 'Connecting' : 'Offline', stream === 'live' ? 'live' : stream === 'connecting' ? 'warn' : 'bad', 'Event stream')}
           </div>
-          <Segmented label="Time range" value={range} options={RANGES} onChange={r => setRange(r)} />
+          {page === 'activity' ? <span className="muted small">Activity · last 24 h</span> : <Segmented label="Time range" value={range} options={RANGES} onChange={r => setRange(r)} />}
           <form className="search" onSubmit={e => { e.preventDefault(); go('events', { q: search }); }}><Icon name="search" /><input placeholder="Search events…" value={search} onChange={e => setSearch(e.target.value)} aria-label="Search events" /></form>
           <button className="bell" onClick={() => go('incidents')} aria-label={`Incidents: ${openIncidents}`}><Icon name="bell" />{openIncidents + approvals.length > 0 && <b>{openIncidents + approvals.length}</b>}</button>
         </div>
@@ -176,6 +179,7 @@ function App() {
       {page === 'events' && <Events events={events} filters={filters} setFilters={setFilters} openEvent={openEvent} canExport={can('audit.export')} exportFile={exportFile} scope={scope} apiKey={key} canVerify={can('audit.read_all')} />}
       {page === 'ghost' && <GhostShell key={`${key}-${ghostSession}`} apiKey={key} api={api} XAI={Explanation} initialSession={ghostSession} demo={demo} />}
       {page === 'agents' && <Agents data={data} policy={policy} />}
+      {page === 'activity' && <AgentGraph key={key} apiKey={key} openEvent={openEvent} openGhost={id => go('ghost', { session: id })} />}
       {page === 'policy' && <PolicyPage policy={policy} health={health} />}
       {page === 'playground' && <Playground me={me} run={run} openEvent={openEvent} openGhost={id => go('ghost', { session: id })} />}
       <footer className="foot"><span>MASQE · zero-trust gateway for AI agents</span><span>{number(events.length)} events in view · policy {policy?.hash || '—'}</span></footer>

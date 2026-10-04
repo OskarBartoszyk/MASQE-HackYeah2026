@@ -316,6 +316,9 @@ func (s *ExecutionService) executeShell(ctx context.Context, req EvaluateRequest
 		return result, nil
 	}
 	before := int(numberOf(state["canary_hits"]))
+	if err := s.Engine.Store.UpdateExecution(evaluation.RequestID, "RUNNING", 0, ""); err != nil {
+		return result, err
+	}
 	state, code, err = ghostCall(ctx, map[string]any{"op": "exec", "owner": req.User.ID, "agent": req.Agent.ID, "id": req.SessionID, "command": command})
 	if err != nil {
 		result.ExecutionError = err.Error()

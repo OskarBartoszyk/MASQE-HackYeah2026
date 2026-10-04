@@ -69,6 +69,8 @@ export const DECISION = {
   REQUIRE_APPROVAL: ['Needs approval', 'approval'], BLOCK: ['Blocked', 'block'], THROTTLE: ['Throttled', 'block'],
 };
 export const EXECUTION = { EXECUTED: 'Executed', EVALUATED: 'Evaluated', PENDING_APPROVAL: 'Awaiting approval', VERDICT_ONLY: 'Verdict only', EXECUTED_OUTPUT_BLOCKED: 'Output withheld', NOT_EXECUTED: 'Not executed', REJECTED: 'Rejected', AUTHORIZED_EXTERNAL: 'Authorized (SDK)', BLOCK: 'Not executed', THROTTLE: 'Not executed' };
+EXECUTION.RUNNING = 'Running';
+
 export const ACTION = {
   'reports.read': 'Read report', 'documents.read': 'Read document', 'customer.read': 'Read customer', 'customer.update': 'Update customer',
   'customer.delete': 'Delete customer', 'customer.export': 'Export customers', 'repository.analyze': 'Analyze repository', 'database.query': 'Database query',
