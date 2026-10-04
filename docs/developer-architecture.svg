@@ -133,13 +133,14 @@
   <text x="1422" y="1307" class="small">internal key</text>
   <path d="M1360 1534H1670" class="async"/>
   <text x="1425" y="1510" class="tag">/explain</text>
-  <text x="1407" y="1570" class="small">async · JSON</text>
+  <text x="1440" y="1570" class="small">async · JSON</text>
 
   <!-- State ownership: links are intentionally separate from model calls. -->
-  <text x="80" y="1750" class="eyebrow">CONFIGURATION + PERSISTENT STATE</text>
   <path d="M400 1810V1680" class="edge"/>
   <path d="M1060 1680V1810" class="edge"/>
   <path d="M2180 1680V1810" class="edge"/>
+  <rect x="80" y="1723" width="655" height="37" fill="#f5f5ee"/>
+  <text x="80" y="1750" class="eyebrow">CONFIGURATION + PERSISTENT STATE</text>
   <rect x="80" y="1810" width="600" height="360" rx="17" class="panel"/>
   <text x="112" y="1858" class="heading">YAML configuration</text>
   <text x="112" y="1903" class="mono">policies/policy.yaml</text>
@@ -171,7 +172,7 @@
   <text x="1662" y="2144" class="small">Compose volume: ghost-data</text>
 
   <!-- Dedicated model edges routed outside the storage panels. -->
-  <path d="M1360 1380H1470V2405H1400" class="edge"/>
+  <path d="M1360 1380H1415V2405H1400" class="edge"/>
   <path d="M2680 1590H2770V2405H2720" class="edge"/>
   <text x="80" y="2250" class="eyebrow">MODEL CONNECTIONS / EXTERNAL TO THE TWO SERVICE PROCESSES</text>
   <rect x="80" y="2290" width="1320" height="250" rx="17" fill="#193f34"/>
